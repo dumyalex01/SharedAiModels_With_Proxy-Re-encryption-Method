@@ -1,7 +1,7 @@
 from flask import Blueprint, request, jsonify
-from server.models import Request
+from app.models import Request
 from werkzeug.security import generate_password_hash,check_password_hash
-from server.extensions import db 
+from app.extensions import db 
 
 bp = Blueprint("request",__name__)
 

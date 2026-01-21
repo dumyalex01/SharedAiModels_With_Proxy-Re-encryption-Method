@@ -1,12 +1,12 @@
 from flask import Flask
-from server.extensions import db
-from server.routes.auth import bp as auth_bp
-from server.routes.request import bp as request_bp
-from server.routes.attachment import bp as attachement_bp
+from app.extensions import db
+from app.routes.auth import bp as auth_bp
+from app.routes.request import bp as request_bp
+from app.routes.attachment import bp as attachement_bp
 
 def create_app():
     app = Flask(__name__)
-    app.config.from_object("server.config.Config")
+    app.config.from_object("app.config.Config")
 
     db.init_app(app)
 

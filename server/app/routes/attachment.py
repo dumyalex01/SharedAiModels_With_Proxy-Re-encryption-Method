@@ -1,6 +1,6 @@
 from flask import Blueprint, request, jsonify
-from server.models import Attachment
-from server.extensions import db 
+from app.models import Attachment
+from app.extensions import db 
 
 bp = Blueprint("attachment",__name__)
 
