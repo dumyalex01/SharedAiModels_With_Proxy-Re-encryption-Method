@@ -46,3 +46,12 @@ def getAttachments():
         })
     
     return jsonify(results),200
+
+#MINIO PRESIGNED URL PENTRU A INCARCA CRIPTAT UN FISIER - 1 endpoint
+#MINIO PENTRU A TRAGE UN ANUMIT FISIER(IL GASESC IN BAZA DE DATE CE PATH ARE IN MINIO) si ma folosesc de
+# id-ul user-ului curent(il trimit ca parametru) pentru a face reencryption la invel de server
+# FLUX:
+# OBTIN CHEIA PE BAZA ID-ULUI LA DESCARCARE - endpoint-ul din keys
+# O TRIMIT CA PARAMETRU PENTRU DESCARCAREA DIN MINIO
+# IN ENDPOINTUL ACESTA CU MINIO FAC RECRIPTARE CU CHEIA DIN PARAMETRU
+# TRAG FISIERUL DORIT PE ENDPOINT 

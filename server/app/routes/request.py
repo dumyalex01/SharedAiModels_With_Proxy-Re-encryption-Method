@@ -37,16 +37,17 @@ def create():
 @bp.route("/get", methods=["GET"])
 def getAll():
 
-    allRequests = Request.query.filter_by(request_status = "pending")
+    status = request.args.get("status")
+    allRequests = Request.query.filter_by(request_status = status)
     result = []
 
-    for request in allRequests:
+    for myRequest in allRequests:
         result.append({
-            "id":request.id,
-            "resource_id": request.resource_id,
-            "requested_by": request.requested_by,
-            "request_status": request.request_status,
-            "created_at": request.created_at
+            "id":myRequest.id,
+            "resource_id": myRequest.resource_id,
+            "requested_by": myRequest.requested_by,
+            "request_status": myRequest.request_status,
+            "created_at": myRequest.created_at
         })
     
     return jsonify(result),200

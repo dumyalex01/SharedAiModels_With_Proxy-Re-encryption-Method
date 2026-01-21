@@ -64,3 +64,17 @@ def register():
         db.session.rollback()
         return jsonify({"error": str(e)}), 500
 
+@bp.route("/getKey", methods = ["GET"])
+def getKey():
+
+     user_id = request.args.get("user_id")
+     
+     if not user_id:
+         return jsonify({"error":"User id is missing!"}),400
+     
+     user = User.query.filter_by(id = user_id).first()
+  
+     if not user:
+         return jsonify({"error":"User doesn't exist!"}),404
+
+     return jsonify({"ecc_public_key": user.ecc_public_key}),200
