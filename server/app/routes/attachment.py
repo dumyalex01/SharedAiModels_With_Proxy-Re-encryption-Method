@@ -1,6 +1,6 @@
 from flask import Blueprint, request, jsonify
 from app.models import Attachment
-from app.extensions import db 
+from app.extensions import db,minio_client 
 
 bp = Blueprint("attachment",__name__)
 
@@ -47,6 +47,10 @@ def getAttachments():
     
     return jsonify(results),200
 
+@bp.route("/presignedUrl", methods=["GET"])
+def getPresignedUrl():
+
+    filename = request.args.get("filename")
 #MINIO PRESIGNED URL PENTRU A INCARCA CRIPTAT UN FISIER - 1 endpoint
 #MINIO PENTRU A TRAGE UN ANUMIT FISIER(IL GASESC IN BAZA DE DATE CE PATH ARE IN MINIO) si ma folosesc de
 # id-ul user-ului curent(il trimit ca parametru) pentru a face reencryption la invel de server

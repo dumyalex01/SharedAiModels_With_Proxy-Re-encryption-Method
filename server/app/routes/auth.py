@@ -24,6 +24,7 @@ def login():
     
     return jsonify({
         "message":"Login successfull!",
+        "id": user.id,
         "username": user.username,
         "role": user.role,
         "ecc_public_key": user.ecc_public_key
