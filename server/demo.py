@@ -1,30 +1,14 @@
+from tinyec import registry
+import secrets
 
-from umbral import keys, pre
+curve = registry.get_curve("secp256r1")
 
-sk_owner = keys.PrivateKey()
-pk_owner = sk_owner.get_public_key()
+sk_A = secrets.randbelow(curve.field.n)
+pk_A = sk_A * curve.g
 
-capsule, encrypted_aes_key = pre.encrypt(pk_owner, aes_key)
+sk_B = secrets.randbelow(curve.field.n) 
+pk_B = sk_B * curve.g
 
+rk_A_to_B = sk_A.inverse() * pk_B
 
-from umbral import signing
-
-signer = signing.Signer(sk_owner)
-kfrags = pre.generate_kfrags(
-    delegating_sk=sk_owner,
-    receiving_pk=pk_receiver,
-    signer=signer,
-    threshold=1,
-    shares=1
-)
-
-
-cfrag = pre.reencrypt(kfrag, capsule)
-
-
-aes_key = pre.decrypt_reencrypted(
-    capsule=capsule,
-    cfrags=[cfrag],
-    decrypting_key=sk_receiver,
-    verifying_keys=[pk_owner]
-)
+print("Re-encryption key A→B:", rk_A_to_B)
