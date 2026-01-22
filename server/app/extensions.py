@@ -8,3 +8,4 @@ minio_client = Minio(
     "minioadmin",
     secure=False
 )
+

@@ -1,5 +1,5 @@
 from flask import Blueprint, request, jsonify
-from app.models import Request
+from app.models import Request,Attachment
 from werkzeug.security import generate_password_hash,check_password_hash
 from app.extensions import db 
 
@@ -70,7 +70,16 @@ def changeStatus():
     
     req.request_status = new_status
     db.session.commit()
+    
 
+
+    if new_status == "approved":
+
+        return jsonify({
+            "message": "Request approved!",
+            "downloader_id": req.requested_by
+        })
+        
     return jsonify({"message":"Request approved!"}),200
 
     

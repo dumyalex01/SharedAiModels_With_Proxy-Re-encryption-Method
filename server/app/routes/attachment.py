@@ -1,6 +1,8 @@
-from flask import Blueprint, request, jsonify
-from app.models import Attachment
+from flask import Blueprint, request, jsonify,send_file
+from app.models import Attachment,Prekey
 from app.extensions import db,minio_client 
+from datetime import timedelta
+from io import BytesIO
 
 bp = Blueprint("attachment",__name__)
 
@@ -10,6 +12,7 @@ def add():
     data = request.get_json()
 
     filename = data.get("filename")
+    owner_id = data.get("owner_id")
 
     if not filename:
         return jsonify({"error":"Not filename in request"}),400
@@ -21,6 +24,7 @@ def add():
     attachment = Attachment(
         filename = filename,
         file_path = file_path,
+        owned_by = owner_id
     )
 
 
@@ -47,15 +51,122 @@ def getAttachments():
     
     return jsonify(results),200
 
+
+@bp.route("/getById", methods = ["GET"])
+def getResourceById():
+    
+    resource_id = request.args.get("id")
+    
+    resource = Attachment.query.filter_by(id = resource_id).first()
+
+    return jsonify({
+        "id": resource.id,
+        "filename": resource.filename,
+        "file_path": resource.file_path,
+        "uploaded_at": resource.uploaded_at,
+        "owned_by": resource.owned_by
+    })
+
 @bp.route("/presignedUrl", methods=["GET"])
 def getPresignedUrl():
 
-    filename = request.args.get("filename")
-#MINIO PRESIGNED URL PENTRU A INCARCA CRIPTAT UN FISIER - 1 endpoint
-#MINIO PENTRU A TRAGE UN ANUMIT FISIER(IL GASESC IN BAZA DE DATE CE PATH ARE IN MINIO) si ma folosesc de
-# id-ul user-ului curent(il trimit ca parametru) pentru a face reencryption la invel de server
-# FLUX:
-# OBTIN CHEIA PE BAZA ID-ULUI LA DESCARCARE - endpoint-ul din keys
-# O TRIMIT CA PARAMETRU PENTRU DESCARCAREA DIN MINIO
-# IN ENDPOINTUL ACESTA CU MINIO FAC RECRIPTARE CU CHEIA DIN PARAMETRU
-# TRAG FISIERUL DORIT PE ENDPOINT 
+    object_name = request.args.get("object_name")
+    bucket_name = "models"
+    object_name = "encryptedFiles/" + object_name + "/" + object_name
+
+    try:
+        existing_product = minio_client.stat_object(
+            bucket_name = bucket_name,
+            object_name = object_name
+        )
+        if existing_product:
+            return jsonify({"error":"Object already existing in minio!"}),400
+    except Exception as e:
+        presigned_url = minio_client.presigned_put_object(
+            bucket_name = bucket_name,
+            object_name = object_name,
+            expires = timedelta(minutes=5)
+        )
+
+        return presigned_url
+
+@bp.route("/presignedUrlDeltas", methods=["GET"])
+def getPresignedUrlDeltas():
+
+    source_model = request.args.get("source_model")
+    delta_name = request.args.get("delta_name")
+
+    bucket_name = "models"
+    source_model_path = "encryptedFiles/" + source_model + "/" + source_model
+    object_name = "encryptedFiles/" + source_model + "/" + delta_name
+
+    try:
+        minio_client.stat_object(
+            bucket_name = bucket_name,
+            object_name = source_model_path
+        )
+    except Exception as e:
+        return jsonify({"error":"Source Model doesn't exist!"}),400
+
+    try:
+        existing_product = minio_client.stat_object(
+            bucket_name = bucket_name,
+            object_name = object_name
+        )
+        if existing_product:
+            return jsonify({"error":"Delta Name already existing in minio!"}), 400
+    except Exception as e:
+        presigned_url = minio_client.presigned_put_object(
+            bucket_name = bucket_name,
+            object_name = object_name,
+            expires = timedelta(minutes = 5)
+        )
+
+        return presigned_url
+
+
+@bp.route("/getModel",methods = ["GET"])
+def getModel():
+
+    source_model = request.args.get("source_model")
+    delta_name = request.args.get("delta_name")
+    user_id = request.args.get("user_id")
+
+    if not source_model or not user_id:
+        return jsonify({"error":"Source model or user id doesn't exist"}),400
+    
+    bucket_name = "models"
+
+    if delta_name:
+        object_name = f"encryptedFiles/{source_model}/{delta_name}"
+    else:
+        object_name = f"encryptedFiles/{source_model}/{source_model}"
+
+    try:
+        minio_client.stat_object(bucket_name,object_name)
+    except Exception as ex:
+        return jsonify({"error":"File doesn't exist!"}),404
+    
+    #metadata = Attachment.query.filter_by(filename = source_model).first()
+   # key = Prekey.query.filter_by(secret_key_user_id = metadata.owned_by, public_key_user_id = user_id).first_or_404()
+    
+    #reencryption_key = key.prekey_value
+
+    # de continuat pana la urmatorul comentariu cu criptarea :)
+
+    # aici e urmatorul comentariu
+    
+    obj = minio_client.get_object(bucket_name, object_name)
+    file_bytes = obj.read()
+    obj.close()
+    obj.release_conn()
+
+    return send_file(
+        BytesIO(file_bytes),
+        mimetype="application/octet-stream",
+        as_attachment=True,
+        download_name=source_model
+    )
+
+
+
