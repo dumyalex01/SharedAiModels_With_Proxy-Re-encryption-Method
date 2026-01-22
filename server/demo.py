@@ -1,14 +1,38 @@
-from tinyec import registry
-import secrets
+import random
+from umbral import (
+    SecretKey, Signer, CapsuleFrag,
+    encrypt, generate_kfrags, reencrypt, decrypt_original, decrypt_reencrypted)
 
-curve = registry.get_curve("secp256r1")
 
-sk_A = secrets.randbelow(curve.field.n)
-pk_A = sk_A * curve.g
+alices_secret_key = SecretKey.random()
+alices_public_key = alices_secret_key.public_key()
 
-sk_B = secrets.randbelow(curve.field.n) 
-pk_B = sk_B * curve.g
+alices_signing_key = SecretKey.random()
+alices_verifying_key = alices_signing_key.public_key()
+alices_signer = Signer(alices_signing_key)
 
-rk_A_to_B = sk_A.inverse() * pk_B
+plaintext = b'Proxy Re-encryption is cool!'
+capsule, ciphertext = encrypt(alices_public_key, plaintext)
 
-print("Re-encryption key A→B:", rk_A_to_B)
+bobs_secret_key = SecretKey.random()
+bobs_public_key = bobs_secret_key.public_key()
+
+bob_capsule = capsule
+kfrags = generate_kfrags(delegating_sk=alices_secret_key,
+                         receiving_pk=bobs_public_key,
+                         signer=alices_signer,
+                         threshold=1,
+                         shares=1)
+cfrags = list() 
+for kfrag in kfrags:
+    cfrag = reencrypt(capsule=capsule, kfrag=kfrag)
+    cfrags.append(cfrag)
+
+
+bob_cleartext = decrypt_reencrypted(receiving_sk=bobs_secret_key,
+                                    delegating_pk=alices_public_key,
+                                    capsule=bob_capsule,
+                                    verified_cfrags=cfrags,
+                                    ciphertext=ciphertext)
+print(bob_cleartext)
+assert bob_cleartext == plaintext
