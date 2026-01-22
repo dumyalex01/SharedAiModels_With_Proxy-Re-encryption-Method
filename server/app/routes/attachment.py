@@ -3,6 +3,7 @@ from app.models import Attachment,Prekey
 from app.extensions import db,minio_client 
 from datetime import timedelta
 from io import BytesIO
+from app.utils import reencrypt
 
 bp = Blueprint("attachment",__name__)
 
@@ -13,6 +14,8 @@ def add():
 
     filename = data.get("filename")
     owner_id = data.get("owner_id")
+    encrypted_key = data.get("encrypted_key")
+    iv = data.get("iv")
 
     if not filename:
         return jsonify({"error":"Not filename in request"}),400
@@ -24,7 +27,9 @@ def add():
     attachment = Attachment(
         filename = filename,
         file_path = file_path,
-        owned_by = owner_id
+        owned_by = owner_id,
+        encrypted_key = encrypted_key,
+        iv = iv
     )
 
 
@@ -125,6 +130,31 @@ def getPresignedUrlDeltas():
         return presigned_url
 
 
+@bp.route("/getAESKey", methods = ["GET"])
+def getAESKey():
+
+    filename = request.args.get("filename")
+    user_id = request.args.get("user_id")
+
+    attachement_metadata = Attachment.query.filter_by(filename = filename).first()
+    encrypted_aes_key = attachement_metadata.encrypted_key
+
+    secret_key_user_id = attachement_metadata.id
+    public_key_user_id = user_id
+
+    prekey_infos = Prekey.query.filter_by(secret_key_user_id = secret_key_user_id, public_key_user_id = public_key_user_id).first()
+    reencrypt_key = prekey_infos.prekey_value
+
+    reencrypted_aes_key = reencrypt(encrypted_aes_key,reencrypt_key)
+
+    return jsonify({
+        "reencrypted_aes_key": reencrypted_aes_key,
+        "iv":attachement_metadata.iv
+    })
+
+
+
+
 @bp.route("/getModel",methods = ["GET"])
 def getModel():
 
@@ -147,15 +177,7 @@ def getModel():
     except Exception as ex:
         return jsonify({"error":"File doesn't exist!"}),404
     
-    #metadata = Attachment.query.filter_by(filename = source_model).first()
-   # key = Prekey.query.filter_by(secret_key_user_id = metadata.owned_by, public_key_user_id = user_id).first_or_404()
-    
-    #reencryption_key = key.prekey_value
-
-    # de continuat pana la urmatorul comentariu cu criptarea :)
-
-    # aici e urmatorul comentariu
-    
+ 
     obj = minio_client.get_object(bucket_name, object_name)
     file_bytes = obj.read()
     obj.close()

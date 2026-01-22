@@ -16,6 +16,7 @@ class Attachment(db.Model):
     filename = db.Column(db.String(255), unique=True, nullable=False)
     file_path = db.Column(db.String(255), unique=True, nullable=False)
     owned_by = db.Column(db.Integer, nullable=False)
+    encrypted_key = db.Column(db.Text, nullable = False)
     uploaded_at = db.Column(db.DateTime, default=datetime.utcnow)
 
 class Prekey(db.Model):
