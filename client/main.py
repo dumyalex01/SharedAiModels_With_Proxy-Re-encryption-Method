@@ -5,7 +5,11 @@ import traceback
 from datetime import datetime
 
 import requests
-
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+from PySide6.QtWidgets import QComboBox
+from umbral import SecretKey
+import base64
+from PySide6.QtWidgets import QScrollArea, QGridLayout, QDialog, QTextEdit, QDialogButtonBox
 from PySide6.QtCore import (
     Qt, QByteArray, QSortFilterProxyModel, QObject, Signal, QRunnable, QThreadPool
 )
@@ -340,11 +344,12 @@ class DriveWindow(QWidget):
         btn_my.setObjectName("SideBtn")
         btn_my.setIcon(icon_from_svg(SVG_FOLDER, 18))
 
-        btn_refresh = QPushButton("  Refresh")
-        btn_refresh.setObjectName("SideBtn")
-        btn_refresh.setIcon(icon_from_svg(SVG_REFRESH, 18))
-        btn_refresh.clicked.connect(self.refresh_attachments)
 
+
+        btn_requests = QPushButton("  Requests")
+        btn_requests.setObjectName("SideBtn")
+        btn_requests.setIcon(icon_from_svg(SVG_SPARK, 18))
+        btn_requests.clicked.connect(self.open_requests)
 
         btn_logout = QPushButton("  Logout")
         btn_logout.setObjectName("SideBtn")
@@ -356,7 +361,7 @@ class DriveWindow(QWidget):
         #s.addWidget(info)
         s.addSpacing(8)
         s.addWidget(btn_my)
-        s.addWidget(btn_refresh)
+        s.addWidget(btn_requests)
         s.addStretch(1)
         s.addWidget(btn_logout)
         main = QFrame()
@@ -417,6 +422,17 @@ class DriveWindow(QWidget):
         shell_l.addWidget(main, 1)
         root.addWidget(shell)
 
+
+    def open_requests(self):
+        self.hide()
+        self.req_win = RequestsWindow(
+            on_logout=self.on_logout,          # logout să te ducă înapoi la login
+            on_back_to_drive=self._back_from_requests
+        )
+        self.req_win.show()
+
+    def _back_from_requests(self):
+        self.show()
     def logout(self):
         # confirmare (optional)
         ans = QMessageBox.question(
@@ -479,23 +495,68 @@ class DriveWindow(QWidget):
                 modified_str=str(up)
             )
 
+    def post_multipart(self, path: str, data: dict, files: dict, timeout=60):
+            r = self.session.post(self._url(path), data=data, files=files, timeout=timeout)
+            try:
+                resp = r.json()
+            except Exception:
+                resp = {"raw": r.text}
+            return r.status_code, resp
+    
+
     def add_attachments_metadata(self):
-        paths, _ = QFileDialog.getOpenFileNames(self, "Select file(s) to add (metadata only)")
+        paths, _ = QFileDialog.getOpenFileNames(self, "Select file(s) to upload (encrypted)")
         if not paths:
             return
 
+        def aes_encrypt_bytes(plain: bytes):
+            key = os.urandom(32)      
+            iv = os.urandom(12)       
+            aesgcm = AESGCM(key)
+            ciphertext = aesgcm.encrypt(iv, plain, None)
+            return ciphertext, key, iv
+        
 
-        filenames = [os.path.basename(p) for p in paths]
+
 
         def job():
             ok = 0
             errors = []
-            for name in filenames:
-                sc, data = api.post_json("/v1/api/attachment/add", {"filename": name})
-                if sc == 200:
-                    ok += 1
-                else:
-                    errors.append((name, sc, data))
+
+            for p in paths:
+                name = os.path.basename(p)
+
+                try:
+                    plain = Path(p).read_bytes()
+
+                    encrypted_content, aes_key, iv = aes_encrypt_bytes(plain)
+
+                    # 3) deocamdată trimiți cheia AES + IV în base64 (NU e “wrap” final, e doar ca să funcționeze)
+                    encrypted_key_b64 = base64.b64encode(aes_key).decode("utf-8")
+                    iv_b64 = base64.b64encode(iv).decode("utf-8")
+
+                    # 4) multipart: câmpuri + fișier criptat
+                    form_data = {
+                        "filename": name,
+                        "owner_id": str(STATE.user_id),
+                        "encrypted_key": encrypted_key_b64,
+                        "iv": iv_b64,
+                    }
+                    files = {
+                        # backend-ul trebuie să citească request.files["file"]
+                        "file": (name + ".enc", encrypted_content, "application/octet-stream")
+                    }
+
+                    sc, data = api.post_multipart("/v1/api/attachment/add", form_data, files)
+
+                    if sc == 200:
+                        ok += 1
+                    else:
+                        errors.append((name, sc, data))
+
+                except Exception as e:
+                    errors.append((name, 0, str(e)))
+
             return ok, errors
 
         j = ApiJob(job)
@@ -512,7 +573,7 @@ class DriveWindow(QWidget):
             QMessageBox.warning(self, "Some adds failed", msg)
 
         self.refresh_attachments()
-        self.status.setText(f"Added {ok} attachment(s).")
+        #self.status.setText(f"Added {ok} attachment(s).")
 
     def _selected_attachment_id(self):
         idx = self.table.selectionModel().currentIndex()
@@ -583,6 +644,372 @@ class DriveWindow(QWidget):
     def _on_api_error(self, msg, tb):
         QMessageBox.critical(self, "API error", f"{msg}\n\n{tb}")
         self.status.setText("Error.")
+
+
+
+
+class RequestsWindow(QWidget):
+    def __init__(self, on_logout, on_back_to_drive):
+        super().__init__()
+        self.on_logout = on_logout
+        self.on_back_to_drive = on_back_to_drive
+#        self._cards = []
+        self._requests = [] 
+        self.setWindowTitle(f"Proiect • Requests • {STATE.username}")
+        self.setFixedSize(1150, 700)
+        self.setWindowFlags(
+            Qt.Window |
+            Qt.WindowMinimizeButtonHint |
+            Qt.WindowCloseButtonHint |
+            Qt.MSWindowsFixedSizeDialogHint
+        )
+        self.setWindowFlag(Qt.WindowMaximizeButtonHint, False)
+
+        self._apply_styles()
+        self._build_ui()
+        self.load_requests()
+       # self._seed_demo()
+
+    def _apply_styles(self):
+        # Copiat ca vibe din DriveWindow + butoane / inputs
+        self.setStyleSheet("""
+            QWidget { background: #070A12; color: #EAF2FF; font-family: Inter, Segoe UI, Arial; }
+
+            #Shell {
+                border-radius: 26px;
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+                    stop:0 #0A1023, stop:0.35 #090A12, stop:0.70 #0A0F1E, stop:1 #070A12);
+                border: 1px solid rgba(255,255,255,0.06);
+            }
+
+            #Sidebar {
+                background: rgba(255,255,255,0.05);
+                border: 1px solid rgba(255,255,255,0.10);
+                border-radius: 22px;
+            }
+
+            QLabel#Brand { font-size: 18px; font-weight: 900; }
+            QLabel#Muted { color: rgba(234,242,255,0.65); font-size: 12px; }
+
+            QPushButton#SideBtn {
+                text-align: left;
+                padding: 10px 12px;
+                border-radius: 14px;
+                background: rgba(255,255,255,0.03);
+                border: 1px solid rgba(255,255,255,0.10);
+                color: rgba(234,242,255,0.92);
+                font-weight: 700;
+            }
+            QPushButton#SideBtn:hover { border: 1px solid rgba(34,211,238,0.65); }
+            QPushButton#SideBtn:pressed { background: rgba(34,211,238,0.10); }
+
+            /* optional: “active” state for current page */
+            QPushButton#SideBtnActive {
+                text-align: left;
+                padding: 10px 12px;
+                border-radius: 14px;
+                background: rgba(34,211,238,0.12);
+                border: 1px solid rgba(34,211,238,0.55);
+                color: rgba(234,242,255,0.98);
+                font-weight: 800;
+            }
+
+            QLineEdit {
+                background: rgba(255,255,255,0.06);
+                border: 1px solid rgba(255,255,255,0.14);
+                border-radius: 14px;
+                padding: 10px 12px;
+                color: #EAF2FF;
+                font-size: 13px;
+            }
+            QLineEdit:focus { border: 1px solid rgba(34,211,238,0.85); }
+
+            QPushButton#UploadBtn {
+                background: rgba(34,211,238,0.18);
+                border: 1px solid rgba(34,211,238,0.55);
+                border-radius: 14px;
+                padding: 10px 14px;
+                font-weight: 900;
+                color: #EAF2FF;
+                font-size: 13px;
+            }
+            QPushButton#UploadBtn:hover {
+                background: rgba(34,211,238,0.24);
+                border: 1px solid rgba(34,211,238,0.85);
+            }
+
+            QScrollArea { border: none; background: transparent; }
+        """)
+
+    def _build_ui(self):
+        root = QVBoxLayout(self)
+        root.setContentsMargins(18, 18, 18, 18)
+
+        shell = QFrame()
+        shell.setObjectName("Shell")
+        shell_l = QHBoxLayout(shell)
+        shell_l.setContentsMargins(18, 18, 18, 18)
+        shell_l.setSpacing(14)
+
+        # ----- Sidebar (same structure as DriveWindow) -----
+        sidebar = QFrame()
+        sidebar.setObjectName("Sidebar")
+        sidebar.setFixedWidth(270)
+        s = QVBoxLayout(sidebar)
+        s.setContentsMargins(16, 16, 16, 16)
+        s.setSpacing(12)
+
+        btn_drive = QPushButton("  My Drive")
+        btn_drive.setObjectName("SideBtn")
+        btn_drive.setIcon(icon_from_svg(SVG_FOLDER, 18))
+        btn_drive.clicked.connect(self.back_to_drive)
+
+        btn_requests = QPushButton("  Requests")
+        btn_requests.setObjectName("SideBtnActive")  # highlight current
+        btn_requests.setIcon(icon_from_svg(SVG_SPARK, 18))
+        btn_requests.setEnabled(True)
+
+        btn_logout = QPushButton("  Logout")
+        btn_logout.setObjectName("SideBtn")
+        btn_logout.setIcon(icon_from_svg(SVG_LOGOUT, 18))
+        btn_logout.clicked.connect(self.logout)
+
+        s.addWidget(btn_drive)
+        s.addWidget(btn_requests)
+        s.addStretch(1)
+        s.addWidget(btn_logout)
+
+        # ----- Main -----
+        main = QFrame()
+        main.setStyleSheet("background: transparent;")
+        m = QVBoxLayout(main)
+        m.setContentsMargins(6, 6, 6, 6)
+        m.setSpacing(12)
+
+        # ----- Top bar (ONLY ONE) -----
+        top = QHBoxLayout()
+        top.setSpacing(10)
+
+        self.search = QLineEdit()
+        self.search.setPlaceholderText("Search requests…")
+        self.search.textChanged.connect(self._rebuild_grid)
+
+        self.status_combo = QComboBox()
+        self.status_combo.setStyleSheet("""
+            QComboBox {
+                background: rgba(255,255,255,0.06);
+                border: 1px solid rgba(255,255,255,0.14);
+                border-radius: 14px;
+                padding: 8px 10px;
+                color: #EAF2FF;
+                font-size: 13px;
+            }
+            QComboBox:focus { border: 1px solid rgba(34,211,238,0.85); }
+            QComboBox QAbstractItemView {
+                background: #0A1023;
+                border: 1px solid rgba(255,255,255,0.12);
+                selection-background-color: rgba(34,211,238,0.20);
+                color: #EAF2FF;
+            }
+        """)
+        self.status_combo.addItems(["Pending", "Approved", "Rejected"])
+        self.status_combo.currentTextChanged.connect(lambda _: self.load_requests())
+
+
+
+        top.addWidget(self.search, 1)
+        top.addWidget(self.status_combo, 0)
+
+        # ----- Cards area (scroll + grid) -----
+        self.scroll = QScrollArea()
+        self.scroll.setWidgetResizable(True)
+        self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+
+        self.grid_host = QWidget()
+        self.grid = QGridLayout(self.grid_host)
+        self.grid.setContentsMargins(0, 0, 0, 0)
+        self.grid.setHorizontalSpacing(12)
+        self.grid.setVerticalSpacing(12)
+        self.scroll.setWidget(self.grid_host)
+
+        # ----- Status label -----
+        self.status = QLabel("Ready.")
+        self.status.setStyleSheet("color: rgba(234,242,255,0.65); font-size: 12px; padding-left: 2px;")
+
+        # Compose main
+        m.addLayout(top)
+        m.addWidget(self.scroll, 1)
+        m.addWidget(self.status)
+
+        # Compose shell
+        shell_l.addWidget(sidebar)
+        shell_l.addWidget(main, 1)
+
+        root.addWidget(shell)
+
+    def _on_api_error(self, msg, tb):
+        QMessageBox.critical(self, "API error", f"{msg}\n\n{tb}")
+        if hasattr(self, "status") and self.status is not None:
+            self.status.setText("Error.")
+
+    def load_requests(self):
+        # apelează exact endpoint-ul tău: /get?status=...
+        status = self.status_combo.currentText().strip()
+        self.status.setText("Loading requests…")
+
+        def job():
+            # adaptează path-ul dacă la tine e alt prefix
+            # ex: "/v1/api/request/get"
+            return api.get_json("/v1/api/request/get", params={"status": status})
+
+        j = ApiJob(job)
+        j.signals.ok.connect(self._on_requests_loaded)
+        j.signals.err.connect(self._on_api_error)
+        pool.start(j)
+
+    def _on_requests_loaded(self, res):
+        sc, data = res
+        if sc != 200:
+            QMessageBox.warning(self, "Backend error", str(data))
+            self.status.setText("Failed to load.")
+            return
+
+        # data ar trebui să fie list[dict]
+        self._requests = data if isinstance(data, list) else []
+        self._rebuild_grid()
+        self.status.setText(f"Loaded {len(self._requests)} request(s).")
+
+    # def _seed_demo(self):
+    #     for i in range(1, 16):
+    #         self._cards.append({
+    #             "title": f"Request #{i}",
+    #             "message": "Vreau acces la fișierul X / permisiune Y. (demo frontend)",
+    #             "meta": f"{datetime.now().strftime('%Y-%m-%d %H:%M')} • status: Pending"
+    #         })
+    #     self._rebuild_grid()
+
+    def _rebuild_grid(self, *_):
+        while self.grid.count():
+            item = self.grid.takeAt(0)
+            w = item.widget()
+            if w:
+                w.setParent(None)
+
+        q = self.search.text().strip().lower()
+
+        visible = []
+        for r in self._requests:
+            rid = r.get("id", "")
+            resource_id = r.get("resource_id", "")
+            requested_by = r.get("requested_by", "")
+            status = r.get("request_status", "")
+            created_at = r.get("created_at", "")
+
+            blob = f"{rid} {resource_id} {requested_by} {status} {created_at}".lower()
+            if not q or q in blob:
+                visible.append(r)
+
+        for idx, r in enumerate(visible):
+            row = idx // 3
+            col = idx % 3
+            card = RequestCard(
+                rid=r.get("id", 0),
+                resource_id=r.get("resource_id", 0),
+                requested_by=r.get("requested_by", 0),
+                status=r.get("request_status", ""),
+                created_at=str(r.get("created_at", "")),
+            )
+            self.grid.addWidget(card, row, col)
+
+        self.grid.setColumnStretch(0, 1)
+        self.grid.setColumnStretch(1, 1)
+        self.grid.setColumnStretch(2, 1)
+
+        self.status.setText(f"{len(visible)} request(s) shown")
+
+    def back_to_drive(self):
+        self.close()
+        self.on_back_to_drive()
+
+    def logout(self):
+        ans = QMessageBox.question(
+            self, "Logout", "Sigur vrei să te deloghezi?",
+            QMessageBox.Yes | QMessageBox.No
+        )
+        if ans != QMessageBox.Yes:
+            return
+        STATE.clear()
+        api.session.cookies.clear()
+        self.close()
+        self.on_logout()
+
+class RequestCard(QFrame):
+    def __init__(self, rid: int, resource_id: int, requested_by: int, status: str, created_at: str):
+        super().__init__()
+        self.setObjectName("ReqCard")
+        self.setMinimumHeight(150)
+
+        # Badge color by status (frontend only)
+        st = (status or "").lower()
+        if st in ("approved", "accept", "accepted"):
+            badge_bg = "rgba(34,197,94,0.18)"     # green-ish
+            badge_bd = "rgba(34,197,94,0.55)"
+        elif st in ("rejected", "deny", "denied"):
+            badge_bg = "rgba(244,63,94,0.18)"     # red-ish
+            badge_bd = "rgba(244,63,94,0.55)"
+        else:
+            badge_bg = "rgba(251,191,36,0.16)"    # amber-ish
+            badge_bd = "rgba(251,191,36,0.45)"
+
+        self.setStyleSheet(f"""
+            #ReqCard {{
+                background: rgba(255,255,255,0.06);
+                border: 1px solid rgba(255,255,255,0.10);
+                border-radius: 18px;
+            }}
+            QLabel#ReqTitle {{ font-size: 14px; font-weight: 900; }}
+            QLabel#ReqMeta  {{ font-size: 11px; color: rgba(234,242,255,0.55); }}
+            QLabel#ReqLine  {{ font-size: 12px; color: rgba(234,242,255,0.82); }}
+            QLabel#Badge {{
+                background: {badge_bg};
+                border: 1px solid {badge_bd};
+                border-radius: 999px;
+                padding: 4px 10px;
+                font-size: 11px;
+                font-weight: 900;
+                color: rgba(234,242,255,0.92);
+            }}
+        """)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(14, 12, 14, 12)
+        layout.setSpacing(8)
+
+        # top row: title + badge
+        top = QHBoxLayout()
+        title = QLabel(f"Request #{rid}")
+        title.setObjectName("ReqTitle")
+
+        badge = QLabel(status or "unknown")
+        badge.setObjectName("Badge")
+
+        top.addWidget(title, 1)
+        top.addWidget(badge, 0, Qt.AlignRight)
+
+        line1 = QLabel(f"Resource ID:  {resource_id}")
+        line1.setObjectName("ReqLine")
+        line2 = QLabel(f"Requested by: {requested_by}")
+        line2.setObjectName("ReqLine")
+
+        meta = QLabel(f"Created: {created_at}")
+        meta.setObjectName("ReqMeta")
+
+        layout.addLayout(top)
+        layout.addWidget(line1)
+        layout.addWidget(line2)
+        layout.addStretch(1)
+        layout.addWidget(meta)
+
 
 
 class SignupGlass(QWidget):
@@ -744,39 +1171,50 @@ class SignupGlass(QWidget):
         self.footer.setText("Registering…")
 
         try:
-            private_key = ec.generate_private_key(ec.SECP256R1())
-            public_key = private_key.public_key()
+            # private_key = ec.generate_private_key(ec.SECP256R1())
+            # public_key = private_key.public_key()
 
-            public_pem = public_key.public_bytes(
-                encoding=serialization.Encoding.PEM,
-                format=serialization.PublicFormat.SubjectPublicKeyInfo
-            ).decode("utf-8")
+            # public_pem = public_key.public_bytes(
+            #     encoding=serialization.Encoding.PEM,
+            #     format=serialization.PublicFormat.SubjectPublicKeyInfo
+            # ).decode("utf-8")
 
-            private_pem = private_key.private_bytes(
-                encoding=serialization.Encoding.PEM,
-                format=serialization.PrivateFormat.PKCS8,
-                encryption_algorithm=serialization.BestAvailableEncryption(pw1.encode("utf-8"))
-            )
+            # private_pem = private_key.private_bytes(
+            #     encoding=serialization.Encoding.PEM,
+            #     format=serialization.PrivateFormat.PKCS8,
+            #     encryption_algorithm=serialization.BestAvailableEncryption(pw1.encode("utf-8"))
+            # )
+
+            # keys_dir = Path.cwd() / "drive_keys"
+            # keys_dir.mkdir(parents=True, exist_ok=True)
+            # priv_path = keys_dir / f"{username}_ecc_private.pem"
+            # pub_path = keys_dir / f"{username}_ecc_public.pem"
+
+            # priv_path.write_bytes(private_pem)
+            # pub_path.write_text(public_pem, encoding="utf-8")
+            sk = SecretKey.random()
+            pk = sk.public_key()
+
+            sk_b64 = base64.b64encode(sk.to_secret_bytes()).decode("utf-8")
+            pk_b64 = base64.b64encode(bytes(pk)).decode("utf-8")
 
             keys_dir = Path.cwd() / "drive_keys"
             keys_dir.mkdir(parents=True, exist_ok=True)
-            priv_path = keys_dir / f"{username}_ecc_private.pem"
-            pub_path = keys_dir / f"{username}_ecc_public.pem"
 
-            priv_path.write_bytes(private_pem)
-            pub_path.write_text(public_pem, encoding="utf-8")
+            (keys_dir / f"{username}_umbral_private.key").write_text(sk_b64, encoding="utf-8")
+            (keys_dir / f"{username}_umbral_public.key").write_text(pk_b64, encoding="utf-8")
 
         except Exception as e:
             self.btn_create.setEnabled(True)
             self.footer.setText("ECC error.")
-            QMessageBox.critical(self, "Eroare ECC", f"Nu am putut genera/salva cheile ECC:\n{e}")
+            QMessageBox.critical(self, "Eroare ECC", f"Nu am :\n{e}")
             return
 
         def job():
             return api.post_json("/v1/api/auth/register", {
                 "username": username,
                 "password": pw1,
-                "ecc_public_key": public_pem,
+                "ecc_public_key": pk_b64,
                 "role": "user"
             })
 
@@ -792,7 +1230,7 @@ class SignupGlass(QWidget):
 
         def _ok(res):
             _cleanup_job()
-            self._on_register_done_with_keypaths(res, priv_path, pub_path)
+            self._on_register_done_with_keypaths(res, (keys_dir / f"{username}_umbral_private.key"), (keys_dir / f"{username}_umbral_public.key"))
 
         def _err(msg, tb):
             _cleanup_job()
@@ -1103,7 +1541,7 @@ class LoginGlass(QWidget):
             STATE.username = data.get("username", "")
             STATE.role = data.get("role", "")
             STATE.ecc_public_key = data.get("ecc_public_key", "")
-            STATE.user_id = None  
+            STATE.user_id = data.get("id","")  
 
             self.hide()
             self.drive = DriveWindow(on_logout=self._show_login_again)
