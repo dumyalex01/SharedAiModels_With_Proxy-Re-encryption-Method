@@ -79,3 +79,21 @@ def getKey():
          return jsonify({"error":"User doesn't exist!"}),404
 
      return jsonify({"ecc_public_key": user.ecc_public_key}),200
+
+@bp.route("/getUserById",methods = ["GET"])
+def getUserById():
+    
+    user_id = request.args.get("user_id")
+
+    if not user_id:
+        return jsonify({"error":"User id is missing!"}),400
+    
+    user = User.query.filter_by(id = user_id).first()
+
+    if not user:
+        return jsonify({"error": "User doesn't exist!"}),404
+    
+    return jsonify({
+        "id" : user.id,
+        "username": user.username
+    })
