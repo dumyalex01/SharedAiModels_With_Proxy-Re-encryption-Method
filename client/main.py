@@ -3,11 +3,13 @@ import sys
 import mimetypes
 import traceback
 from datetime import datetime
+import json
+
 
 import requests
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from PySide6.QtWidgets import QComboBox
-from umbral import SecretKey
+from umbral import SecretKey,pre,keys
 import base64
 from PySide6.QtWidgets import QScrollArea, QGridLayout, QDialog, QTextEdit, QDialogButtonBox
 from PySide6.QtCore import (
@@ -516,6 +518,22 @@ class DriveWindow(QWidget):
             ciphertext = aesgcm.encrypt(iv, plain, None)
             return ciphertext, key, iv
         
+        def load_umbral_public_key(username: str):
+            pk_path = Path("drive_keys") / f"{username}_umbral_public.key"
+            pk_b64 = pk_path.read_text()
+            return keys.PublicKey.from_bytes(
+        base64.b64decode(pk_b64)
+    )
+        def encrypt_aes_key_umbral(aes_key: bytes, pubkey):
+            capsule, ciphertext = pre.encrypt(pubkey, aes_key)
+
+            capsule_bytes = bytes(capsule)
+
+            encrypted_key_b64 = base64.b64encode(ciphertext).decode()
+            capsule_b64 = base64.b64encode(capsule_bytes).decode()
+            
+
+            return encrypted_key_b64, capsule_b64
 
 
 
@@ -531,23 +549,44 @@ class DriveWindow(QWidget):
 
                     encrypted_content, aes_key, iv = aes_encrypt_bytes(plain)
 
+                    #TO DO - SA SCOTI HARDCODAREA SI SA TE FOLOSESTI DE CE AI TU LEGAT DE NUME USER :)
+                    owner_pubkey = load_umbral_public_key("alex")
+
+                    encrypted_key_b64, capsule_b64 = encrypt_aes_key_umbral(
+                        aes_key,
+                        owner_pubkey
+                    )
+
                     # 3) deocamdată trimiți cheia AES + IV în base64 (NU e “wrap” final, e doar ca să funcționeze)
-                    encrypted_key_b64 = base64.b64encode(aes_key).decode("utf-8")
-                    iv_b64 = base64.b64encode(iv).decode("utf-8")
+                    
+                    iv_b64 = base64.b64encode(iv).decode()
+
 
                     # 4) multipart: câmpuri + fișier criptat
-                    form_data = {
+
+                    payload = {
                         "filename": name,
                         "owner_id": str(STATE.user_id),
-                        "encrypted_key": encrypted_key_b64,
-                        "iv": iv_b64,
-                    }
-                    files = {
-                        # backend-ul trebuie să citească request.files["file"]
-                        "file": (name + ".enc", encrypted_content, "application/octet-stream")
+                        "encrypted_aes_key": encrypted_key_b64,
+                        "capsule": capsule_b64,
+                        "iv": iv_b64
                     }
 
-                    sc, data = api.post_multipart("/v1/api/attachment/add", form_data, files)
+             #       form_data = {
+              #      "filename": name,
+               #     "owner_id": str(STATE.user_id),
+                #    "encrypted_aes_key": encrypted_key_b64,
+                 #   "capsule": capsule_b64,
+                  #  "iv": iv_b64,
+                #}
+                 #   files = {
+                        # backend-ul trebuie să citească request.files["file"]
+                  #      "file": (name + ".enc", encrypted_content, "application/octet-stream")
+                   # }
+
+                    #sc, data = api.post_multipart("/v1/api/attachment/add", form_data, files)
+
+                    sc, data = api.post_json("/v1/api/attachment/add", payload)
 
                     if sc == 200:
                         ok += 1
@@ -635,6 +674,7 @@ class DriveWindow(QWidget):
         aid = name_item.data(self.ROLE_ATTACHMENT_ID)
         owner = self.model.item(row, self.COL_OWNER).text()
         mod = self.model.item(row, self.COL_MODIFIED).text()
+
         QMessageBox.information(
             self, "Attachment details",
             f"ID: {aid}\nName: {name}\nOwner: {owner}\n or '-'\nUploaded: {mod}\n\n"

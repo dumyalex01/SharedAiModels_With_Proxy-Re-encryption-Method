@@ -14,8 +14,9 @@ def add():
 
     filename = data.get("filename")
     owner_id = data.get("owner_id")
-    encrypted_key = data.get("encrypted_key")
+    encrypted_key = data.get("encrypted_aes_key")
     iv = data.get("iv")
+    capsule = data.get("capsule")
 
     if not filename:
         return jsonify({"error":"Not filename in request"}),400
@@ -28,10 +29,10 @@ def add():
         filename = filename,
         file_path = file_path,
         owned_by = owner_id,
-        encrypted_key = encrypted_key,
-        iv = iv
+        encrypted_aes_key = encrypted_key,
+        iv = iv,
+        capsule = capsule
     )
-
 
     try:
         db.session.add(attachment)
@@ -51,6 +52,8 @@ def getAttachments():
             "id": attachment.id,
             "filename": attachment.filename,
             "file_path": attachment.file_path,
+            "encrypted_aes_key": attachment.encrypted_aes_key,
+            "iv": attachment.iv,
             "uploaded_at": attachment.uploaded_at
         })
     
