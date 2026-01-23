@@ -1582,6 +1582,7 @@ class LoginGlass(QWidget):
             STATE.role = data.get("role", "")
             STATE.ecc_public_key = data.get("ecc_public_key", "")
             STATE.user_id = data.get("id","")  
+            
 
             self.hide()
             self.drive = DriveWindow(on_logout=self._show_login_again)

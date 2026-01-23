@@ -36,21 +36,50 @@ def create():
 
 @bp.route("/get", methods=["GET"])
 def getAll():
-
     status = request.args.get("status")
-    allRequests = Request.query.filter_by(request_status = status)
+    user_id = request.args.get("user_id")
+
+    if not user_id:
+        return jsonify({"error": "Missing user_id"}), 400
+
     result = []
 
-    for myRequest in allRequests:
-        result.append({
-            "id":myRequest.id,
-            "resource_id": myRequest.resource_id,
-            "requested_by": myRequest.requested_by,
-            "request_status": myRequest.request_status,
-            "created_at": myRequest.created_at
-        })
-    
-    return jsonify(result),200
+    if status == "approved":
+        approved_requests = Request.query.filter_by(
+            request_status="approved",
+            requested_by=user_id
+        ).all()
+
+        for req in approved_requests:
+            result.append({
+                "id": req.id,
+                "resource_id": req.resource_id,
+                "requested_by": req.requested_by,
+                "request_status": req.request_status,
+                "created_at": req.created_at
+            })
+
+    elif status == "pending":
+        user_attachments = Attachment.query.filter_by(owned_by=user_id).all()
+        attachment_ids = [att.id for att in user_attachments]
+
+        if attachment_ids:
+            pending_requests = Request.query.filter(
+                Request.request_status == "pending",
+                Request.resource_id.in_(attachment_ids)
+            ).all()
+
+            for req in pending_requests:
+                result.append({
+                    "id": req.id,
+                    "resource_id": req.resource_id,
+                    "requested_by": req.requested_by,
+                    "request_status": req.request_status,
+                    "created_at": req.created_at
+                })
+
+    return jsonify(result), 200
+
 
 @bp.route("/changeStatus", methods = ["POST"])
 def changeStatus():
