@@ -96,7 +96,7 @@ def getPresignedUrl():
             expires = timedelta(minutes=5)
         )
 
-        return presigned_url
+        return jsonify({"url":presigned_url})
 
 @bp.route("/presignedUrlDeltas", methods=["GET"])
 def getPresignedUrlDeltas():
@@ -142,7 +142,7 @@ def getAESKey():
     attachement_metadata = Attachment.query.filter_by(filename = filename).first()
     encrypted_aes_key = attachement_metadata.encrypted_key
 
-    secret_key_user_id = attachement_metadata.id
+    secret_key_user_id = attachement_metadata.owned_by
     public_key_user_id = user_id
 
     prekey_infos = Prekey.query.filter_by(secret_key_user_id = secret_key_user_id, public_key_user_id = public_key_user_id).first()

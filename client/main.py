@@ -428,7 +428,7 @@ class DriveWindow(QWidget):
     def open_requests(self):
         self.hide()
         self.req_win = RequestsWindow(
-            on_logout=self.on_logout,          # logout să te ducă înapoi la login
+            on_logout=self.on_logout,         
             on_back_to_drive=self._back_from_requests
         )
         self.req_win.show()
@@ -586,14 +586,27 @@ class DriveWindow(QWidget):
 
                     #sc, data = api.post_multipart("/v1/api/attachment/add", form_data, files)
 
-                    sc, data = api.post_json("/v1/api/attachment/add", payload)
+                    
 
-                    if sc == 200:
-                        ok += 1
-                    else:
+                    sc, data= api.get_json(f"/v1/api/attachment/presignedUrl", params={"object_name": name})
+                
+                    presigned_url = data["url"]
+
+                    requests.put(
+                        presigned_url,
+                        data=encrypted_content,
+                        headers={"Content-Type": "application/octet-stream"}
+                    )
+
+                    sc, data = api.post_json("/v1/api/attachment/add", payload)
+                    if sc != 200:
                         errors.append((name, sc, data))
+                        continue
+
+                    ok += 1
 
                 except Exception as e:
+                    print(str(e))
                     errors.append((name, 0, str(e)))
 
             return ok, errors
