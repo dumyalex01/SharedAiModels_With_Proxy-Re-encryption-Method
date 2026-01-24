@@ -89,6 +89,7 @@ def getPresignedUrl():
         )
         if existing_product:
             return jsonify({"error":"Object already existing in minio!"}),400
+        
     except Exception as e:
         presigned_url = minio_client.presigned_put_object(
             bucket_name = bucket_name,
@@ -194,4 +195,14 @@ def getModel():
     )
 
 
+@bp.route("/getById", methods = ["GET"])
+def getById():
 
+    id = request.args.get("id")
+
+    attachment = Attachment.query.filter_by(id = id).first()
+
+    return jsonify({
+        "id" : id,
+        "filename": attachment.filename
+    })

@@ -532,7 +532,6 @@ class DriveWindow(QWidget):
             encrypted_key_b64 = base64.b64encode(ciphertext).decode()
             capsule_b64 = base64.b64encode(capsule_bytes).decode()
             
-
             return encrypted_key_b64, capsule_b64
 
 
