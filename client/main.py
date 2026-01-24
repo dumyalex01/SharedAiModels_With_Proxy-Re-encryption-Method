@@ -481,7 +481,7 @@ class DriveWindow(QWidget):
     def _on_attachments_loaded(self, res):
         status_code, data = res
         if status_code != 200:
-            self.status.setText(f"Failed to load: {data}")
+            #self.status.setText(f"Failed to load: {data}")
             QMessageBox.warning(self, "Backend error", str(data))
             return
 
@@ -872,7 +872,6 @@ class RequestsWindow(QWidget):
         top.addWidget(self.search, 1)
         top.addWidget(self.status_combo, 0)
 
-        # ----- Cards area (scroll + grid) -----
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(True)
         self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
@@ -884,16 +883,13 @@ class RequestsWindow(QWidget):
         self.grid.setVerticalSpacing(12)
         self.scroll.setWidget(self.grid_host)
 
-        # ----- Status label -----
         self.status = QLabel("Ready.")
         self.status.setStyleSheet("color: rgba(234,242,255,0.65); font-size: 12px; padding-left: 2px;")
 
-        # Compose main
         m.addLayout(top)
         m.addWidget(self.scroll, 1)
         m.addWidget(self.status)
 
-        # Compose shell
         shell_l.addWidget(sidebar)
         shell_l.addWidget(main, 1)
 
@@ -905,14 +901,11 @@ class RequestsWindow(QWidget):
             self.status.setText("Error.")
 
     def load_requests(self):
-        # apelează exact endpoint-ul tău: /get?status=...
-        status = self.status_combo.currentText().strip()
+        status = self.status_combo.currentText().strip().lower()
         self.status.setText("Loading requests…")
 
         def job():
-            # adaptează path-ul dacă la tine e alt prefix
-            # ex: "/v1/api/request/get"
-            return api.get_json("/v1/api/request/get", params={"status": status})
+            return api.get_json("/v1/api/request/get", params={"status": status, "user_id": STATE.user_id})
 
         j = ApiJob(job)
         j.signals.ok.connect(self._on_requests_loaded)
@@ -922,11 +915,22 @@ class RequestsWindow(QWidget):
     def _on_requests_loaded(self, res):
         sc, data = res
         if sc != 200:
-            QMessageBox.warning(self, "Backend error", str(data))
+            msg = QMessageBox(self)
+            msg.setIcon(QMessageBox.Warning)
+            msg.setWindowTitle("AABackend error")
+            msg.setText(str(data))
+
+            msg.setStyleSheet("""
+            QLabel {
+                min-width: 500px;
+            }
+            """)
+
+            msg.exec()
+
             self.status.setText("Failed to load.")
             return
 
-        # data ar trebui să fie list[dict]
         self._requests = data if isinstance(data, list) else []
         self._rebuild_grid()
         self.status.setText(f"Loaded {len(self._requests)} request(s).")
@@ -970,6 +974,8 @@ class RequestsWindow(QWidget):
                 requested_by=r.get("requested_by", 0),
                 status=r.get("request_status", ""),
                 created_at=str(r.get("created_at", "")),
+                on_decision=self._change_request_status,
+                on_download=self._download_attachment,
             )
             self.grid.addWidget(card, row, col)
 
@@ -979,6 +985,68 @@ class RequestsWindow(QWidget):
 
         self.status.setText(f"{len(visible)} request(s) shown")
 
+    #TODO: request
+    def _change_request_status(self, request_id: int, new_status: str):
+        self.status.setText(f"Updating request #{request_id} → {new_status}…")
+
+        def job():
+            return api.post_json("/v1/api/request/changeStatus", {
+                "id": int(request_id),
+                "new_status": new_status
+            })
+
+        j = ApiJob(job)
+
+        def _ok(res):
+            sc, data = res
+            if sc != 200:
+                QMessageBox.warning(self, "Update failed", str(data))
+                self.status.setText("Update failed.")
+                return
+            self.load_requests()
+
+        def _err(msg, tb):
+            self._on_api_error(msg, tb)
+
+        j.signals.ok.connect(_ok)
+        j.signals.err.connect(_err)
+        pool.start(j)
+
+    #TODO: download
+    def _download_attachment(self, attachment_id: int):
+        self.status.setText(f"Fetching attachment #{attachment_id}…")
+
+        def job():
+            return api.get_json(
+                "/v1/api/attachment/getById",
+                params={"id": int(attachment_id)}
+            )
+
+        j = ApiJob(job)
+
+        def _ok(res):
+            sc, data = res
+            if sc != 200:
+                QMessageBox.warning(self, "GetById failed", str(data))
+                self.status.setText("GetById failed.")
+                return
+
+            print("[GET BY ID RESULT]", data)
+
+            print("id:", data.get("id"))
+            print("filename:", data.get("filename"))
+            print("file_path:", data.get("file_path"))
+            print("uploaded_at:", data.get("uploaded_at"))
+            print("owned_by:", data.get("owned_by"))
+
+            self.status.setText("Resource loaded (printed in console).")
+
+        def _err(msg, tb):
+            self._on_api_error(msg, tb)
+
+        j.signals.ok.connect(_ok)
+        j.signals.err.connect(_err)
+        pool.start(j)
     def back_to_drive(self):
         self.close()
         self.on_back_to_drive()
@@ -996,21 +1064,24 @@ class RequestsWindow(QWidget):
         self.on_logout()
 
 class RequestCard(QFrame):
-    def __init__(self, rid: int, resource_id: int, requested_by: int, status: str, created_at: str):
+    def __init__(self, rid: int, resource_id: int, requested_by: int, status: str, created_at: str, on_decision=None, on_download=None):
         super().__init__()
         self.setObjectName("ReqCard")
-        self.setMinimumHeight(150)
-
-        # Badge color by status (frontend only)
+        self.setFixedHeight(170)
+        self._resource_id = int(resource_id)
+        self._rid = int(rid)
+        self._status = (status or "").lower()
+        self._on_decision = on_decision
+        self._on_download = on_download
         st = (status or "").lower()
         if st in ("approved", "accept", "accepted"):
-            badge_bg = "rgba(34,197,94,0.18)"     # green-ish
+            badge_bg = "rgba(34,197,94,0.18)"    
             badge_bd = "rgba(34,197,94,0.55)"
         elif st in ("rejected", "deny", "denied"):
-            badge_bg = "rgba(244,63,94,0.18)"     # red-ish
+            badge_bg = "rgba(244,63,94,0.18)"     
             badge_bd = "rgba(244,63,94,0.55)"
         else:
-            badge_bg = "rgba(251,191,36,0.16)"    # amber-ish
+            badge_bg = "rgba(251,191,36,0.16)"   
             badge_bd = "rgba(251,191,36,0.45)"
 
         self.setStyleSheet(f"""
@@ -1037,7 +1108,6 @@ class RequestCard(QFrame):
         layout.setContentsMargins(14, 12, 14, 12)
         layout.setSpacing(8)
 
-        # top row: title + badge
         top = QHBoxLayout()
         title = QLabel(f"Request #{rid}")
         title.setObjectName("ReqTitle")
@@ -1061,6 +1131,89 @@ class RequestCard(QFrame):
         layout.addWidget(line2)
         layout.addStretch(1)
         layout.addWidget(meta)
+
+        if self._status == "pending" and callable(self._on_decision):
+            actions = QHBoxLayout()
+            actions.setSpacing(10)
+
+            btn_reject = QPushButton("Reject")
+            btn_accept = QPushButton("Accept")
+
+            btn_reject.setCursor(Qt.PointingHandCursor)
+            btn_accept.setCursor(Qt.PointingHandCursor)
+
+            btn_accept.setStyleSheet("""
+                QPushButton {
+                    background: rgba(34,197,94,0.18);
+                    border: 1px solid rgba(34,197,94,0.55);
+                    border-radius: 12px;
+                    padding: 8px 12px;
+                    font-weight: 900;
+                    color: rgba(234,242,255,0.95);
+                }
+                QPushButton:hover {
+                    border: 1px solid rgba(34,197,94,0.9);
+                    background: rgba(34,197,94,0.26);
+                }
+            """)
+
+            btn_reject.setStyleSheet("""
+                QPushButton {
+                    background: rgba(244,63,94,0.18);
+                    border: 1px solid rgba(244,63,94,0.55);
+                    border-radius: 12px;
+                    padding: 8px 12px;
+                    font-weight: 900;
+                    color: rgba(234,242,255,0.95);
+                }
+                QPushButton:hover {
+                    border: 1px solid rgba(244,63,94,0.9);
+                    background: rgba(244,63,94,0.26);
+                }
+            """)
+
+            def do_accept():
+                ans = QMessageBox.question(self, "Approve request", f"Approve request #{self._rid}?",
+                                           QMessageBox.Yes | QMessageBox.No)
+                if ans == QMessageBox.Yes:
+                    self._on_decision(self._rid, "approved")
+
+            def do_reject():
+                ans = QMessageBox.question(self, "Reject request", f"Reject request #{self._rid}?",
+                                           QMessageBox.Yes | QMessageBox.No)
+                if ans == QMessageBox.Yes:
+                    self._on_decision(self._rid, "rejected")
+
+            btn_accept.clicked.connect(do_accept)
+            btn_reject.clicked.connect(do_reject)
+
+            actions.addWidget(btn_reject, 1)
+            actions.addWidget(btn_accept, 1)
+
+            layout.addLayout(actions)
+        
+        if self._status == "approved" and callable(self._on_download):
+            btn_download = QPushButton("Download")
+            btn_download.setCursor(Qt.PointingHandCursor)
+
+            btn_download.setStyleSheet("""
+                QPushButton {
+                    background: rgba(59,130,246,0.18);
+                    border: 1px solid rgba(59,130,246,0.55);
+                    border-radius: 12px;
+                    padding: 8px 12px;
+                    font-weight: 900;
+                    color: rgba(234,242,255,0.95);
+                }
+                QPushButton:hover {
+                    border: 1px solid rgba(59,130,246,0.9);
+                    background: rgba(59,130,246,0.26);
+                }
+            """)
+
+            btn_download.clicked.connect(lambda: self._on_download(self._resource_id))
+            layout.addWidget(btn_download)
+
 
 
 
@@ -1604,7 +1757,7 @@ class LoginGlass(QWidget):
 
     def _on_api_error(self, msg, tb):
         QMessageBox.critical(self, "API error", f"{msg}\n\n{tb}")
-        self.footer.setText("Error.")
+        #self.footer.setText("Error.")
 
 
 if __name__ == "__main__":
