@@ -53,6 +53,7 @@ def getAttachments():
             "filename": attachment.filename,
             "file_path": attachment.file_path,
             "encrypted_aes_key": attachment.encrypted_aes_key,
+            "owned_by": attachment.owned_by,
             "iv": attachment.iv,
             "uploaded_at": attachment.uploaded_at
         })

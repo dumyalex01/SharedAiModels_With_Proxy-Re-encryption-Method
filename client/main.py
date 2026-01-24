@@ -481,6 +481,7 @@ class DriveWindow(QWidget):
 
     def _on_attachments_loaded(self, res):
         status_code, data = res
+        print(data)
         if status_code != 200:
             #self.status.setText(f"Failed to load: {data}")
             QMessageBox.warning(self, "Backend error", str(data))
@@ -491,12 +492,19 @@ class DriveWindow(QWidget):
             aid = a.get("id", 0)
             fname = a.get("filename", "")
             up = a.get("uploaded_at", "")
-            self._add_row(
-                attachment_id=aid,
-                name=fname,
-                owner=STATE.username,
-                modified_str=str(up)
-            )
+            owner_id = a.get("owned_by", "")
+            owner_name = str(owner_id)
+        if owner_id:
+            sc, user_data = api.get_json("/v1/api/auth/getUserById", params={"user_id": owner_id})
+            if sc == 200 and user_data:
+                owner_name = user_data.get("username", str(owner_id))
+
+        self._add_row(
+            attachment_id=aid,
+            name=fname,
+            owner=owner_name,
+            modified_str=str(up)
+        )
 
     def post_multipart(self, path: str, data: dict, files: dict, timeout=60):
             r = self.session.post(self._url(path), data=data, files=files, timeout=timeout)
@@ -1015,6 +1023,10 @@ class RequestsWindow(QWidget):
                 self.status.setText("Update failed.")
                 return
             self.load_requests()
+
+            if new_status == "approved":
+                requested_by_id = data.get("requested_by")
+                print(requested_by_id)
 
         def _err(msg, tb):
             cleanup()
