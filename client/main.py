@@ -5,6 +5,7 @@ import traceback
 from datetime import datetime
 import json
 
+from shiboken6 import isValid
 
 import requests
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
@@ -705,6 +706,7 @@ class RequestsWindow(QWidget):
         super().__init__()
         self.on_logout = on_logout
         self.on_back_to_drive = on_back_to_drive
+        self._jobs = []
 #        self._cards = []
         self._requests = [] 
         self.setWindowTitle(f"Proiect • Requests • {STATE.username}")
@@ -997,7 +999,16 @@ class RequestsWindow(QWidget):
 
         j = ApiJob(job)
 
+        self._jobs.append(j)
+        
+        def cleanup():
+            try:
+                self._jobs.remove(j)
+            except ValueError:
+                pass
+        
         def _ok(res):
+            cleanup()
             sc, data = res
             if sc != 200:
                 QMessageBox.warning(self, "Update failed", str(data))
@@ -1006,6 +1017,7 @@ class RequestsWindow(QWidget):
             self.load_requests()
 
         def _err(msg, tb):
+            cleanup()
             self._on_api_error(msg, tb)
 
         j.signals.ok.connect(_ok)
@@ -1013,40 +1025,49 @@ class RequestsWindow(QWidget):
         pool.start(j)
 
     #TODO: download
-    def _download_attachment(self, attachment_id: int):
-        self.status.setText(f"Fetching attachment #{attachment_id}…")
-
+    def _download_attachment(self, attachment_id: int, btn: QPushButton):
+        #self.status.setText(f"Fetching attachment #{attachment_id}…")
         def job():
             return api.get_json(
                 "/v1/api/attachment/getById",
                 params={"id": int(attachment_id)}
             )
-
+    
         j = ApiJob(job)
+        self._jobs.append(j)
+
+        def safe_enable():
+            if btn is not None and isValid(btn):
+                btn.setEnabled(True)
+
+        def finish_cleanup():
+            try:
+                self._jobs.remove(j)
+            except ValueError:
+                pass
 
         def _ok(res):
+
             sc, data = res
             if sc != 200:
+                safe_enable()
                 QMessageBox.warning(self, "GetById failed", str(data))
-                self.status.setText("GetById failed.")
+                finish_cleanup()
                 return
-
             print("[GET BY ID RESULT]", data)
-
-            print("id:", data.get("id"))
-            print("filename:", data.get("filename"))
-            print("file_path:", data.get("file_path"))
-            print("uploaded_at:", data.get("uploaded_at"))
-            print("owned_by:", data.get("owned_by"))
-
-            self.status.setText("Resource loaded (printed in console).")
+            safe_enable()
+            finish_cleanup()
 
         def _err(msg, tb):
+            print("A INTRAT 8")
+            safe_enable()
             self._on_api_error(msg, tb)
-
+            finish_cleanup()
+        print("a intrat 8")
         j.signals.ok.connect(_ok)
         j.signals.err.connect(_err)
         pool.start(j)
+
     def back_to_drive(self):
         self.close()
         self.on_back_to_drive()
@@ -1070,6 +1091,7 @@ class RequestCard(QFrame):
         self.setFixedHeight(170)
         self._resource_id = int(resource_id)
         self._rid = int(rid)
+        self.btn_download = None
         self._status = (status or "").lower()
         self._on_decision = on_decision
         self._on_download = on_download
@@ -1193,10 +1215,10 @@ class RequestCard(QFrame):
             layout.addLayout(actions)
         
         if self._status == "approved" and callable(self._on_download):
-            btn_download = QPushButton("Download")
-            btn_download.setCursor(Qt.PointingHandCursor)
+            self.btn_download = QPushButton("Download")
+            self.btn_download.setCursor(Qt.PointingHandCursor)
 
-            btn_download.setStyleSheet("""
+            self.btn_download.setStyleSheet("""
                 QPushButton {
                     background: rgba(59,130,246,0.18);
                     border: 1px solid rgba(59,130,246,0.55);
@@ -1211,8 +1233,14 @@ class RequestCard(QFrame):
                 }
             """)
 
-            btn_download.clicked.connect(lambda: self._on_download(self._resource_id))
-            layout.addWidget(btn_download)
+            self.btn_download.clicked.connect(self._on_download_clicked)            
+            layout.addWidget(self.btn_download)
+
+    def _on_download_clicked(self):
+        if self.btn_download:
+            self.btn_download.setEnabled(False)
+        self._on_download(self._resource_id, self.btn_download)
+
 
 
 
