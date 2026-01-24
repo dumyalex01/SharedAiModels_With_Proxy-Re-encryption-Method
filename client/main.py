@@ -6,7 +6,8 @@ from datetime import datetime
 import json
 
 from shiboken6 import isValid
-
+from PySide6.QtWidgets import QStyledItemDelegate, QApplication, QStyle, QStyleOptionButton
+from PySide6.QtCore import QRect, QEvent
 import requests
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from PySide6.QtWidgets import QComboBox
@@ -195,9 +196,11 @@ class DriveWindow(QWidget):
     COL_NAME = 0
     COL_OWNER = 1
     COL_MODIFIED = 2
-    HEADERS = ["Name", "Owner", "Uploaded"]
+    COL_ACTION = 3
+    HEADERS = ["Name", "Owner", "Uploaded", "Action"]
 
     ROLE_ATTACHMENT_ID = Qt.UserRole + 10
+    ROLE_OWNER_ID = Qt.UserRole + 11
 
     def __init__(self, on_logout):
         super().__init__()
@@ -386,13 +389,9 @@ class DriveWindow(QWidget):
         upload_btn.setIcon(icon_from_svg(SVG_UPLOAD, 18))
         upload_btn.clicked.connect(self.add_attachments_metadata)
 
-        # self.req_btn = QPushButton("Request access (optional)")
-        # self.req_btn.setObjectName("GhostBtn")
-        # self.req_btn.clicked.connect(self.request_access_for_selected)
 
         top.addWidget(self.search, 1)
         top.addWidget(upload_btn, 0)
-        #top.addWidget(self.req_btn, 0)
 
         self.model = QStandardItemModel(0, len(self.HEADERS))
         self.model.setHorizontalHeaderLabels(self.HEADERS)
@@ -403,8 +402,11 @@ class DriveWindow(QWidget):
         self.proxy.setFilterKeyColumn(-1)
 
         self.table = QTableView()
+        self.table.setMouseTracking(True)
+        self.table.viewport().setMouseTracking(True)
         self.table.setModel(self.proxy)
-        self.table.setSortingEnabled(True)
+        self.table.setItemDelegateForColumn(self.COL_ACTION, RequestButtonDelegate(self.table, self))
+        self.table.setSortingEnabled(False)
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.SingleSelection)
         self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
@@ -413,6 +415,7 @@ class DriveWindow(QWidget):
         self.table.horizontalHeader().setSectionResizeMode(self.COL_NAME, QHeaderView.Stretch)
         self.table.horizontalHeader().setSectionResizeMode(self.COL_OWNER, QHeaderView.ResizeToContents)
         self.table.horizontalHeader().setSectionResizeMode(self.COL_MODIFIED, QHeaderView.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(self.COL_ACTION, QHeaderView.ResizeToContents)
 
         self.table.doubleClicked.connect(self.open_selected_info)
 
@@ -459,7 +462,7 @@ class DriveWindow(QWidget):
     def _clear_rows(self):
         self.model.removeRows(0, self.model.rowCount())
 
-    def _add_row(self, attachment_id: int, name: str, owner: str, modified_str: str):
+    def _add_row(self, attachment_id: int, name: str, owner: str, modified_str: str, owner_id: int):
         icon = icon_from_svg(SVG_FILE, 18)
         name_item = QStandardItem(icon, f"  {name}")
         name_item.setData(name, Qt.UserRole)
@@ -468,7 +471,10 @@ class DriveWindow(QWidget):
         owner_item = QStandardItem(owner)
         mod_item = QStandardItem(modified_str)
 
-        self.model.appendRow([name_item, owner_item, mod_item])
+        action_item = QStandardItem("Request")  
+        action_item.setData(int(attachment_id), self.ROLE_ATTACHMENT_ID)
+        action_item.setData(int(owner_id), self.ROLE_OWNER_ID)
+        self.model.appendRow([name_item, owner_item, mod_item, action_item])
 
     def refresh_attachments(self):
         def job():
@@ -503,7 +509,8 @@ class DriveWindow(QWidget):
             attachment_id=aid,
             name=fname,
             owner=owner_name,
-            modified_str=str(up)
+            modified_str=str(up),
+            owner_id=int(owner_id)
         )
 
     def post_multipart(self, path: str, data: dict, files: dict, timeout=60):
@@ -633,7 +640,6 @@ class DriveWindow(QWidget):
             QMessageBox.warning(self, "Some adds failed", msg)
 
         self.refresh_attachments()
-        #self.status.setText(f"Added {ok} attachment(s).")
 
     def _selected_attachment_id(self):
         idx = self.table.selectionModel().currentIndex()
@@ -646,34 +652,6 @@ class DriveWindow(QWidget):
             return None
         return item.data(self.ROLE_ATTACHMENT_ID)
 
-    def request_access_for_selected(self):
-        if STATE.user_id is None:
-            QMessageBox.information(
-                self, "Missing user_id",
-                "Ca să trimiți cereri de acces, ai nevoie de user_id numeric.\n"
-                "Redeschide fereastra sau folosește butonul Refresh și introdu ID-ul când ești întrebat."
-            )
-            self._maybe_ask_user_id()
-            if STATE.user_id is None:
-                return
-
-        aid = self._selected_attachment_id()
-        if not aid:
-            QMessageBox.information(self, "No selection", "Selectează un attachment din tabel.")
-            return
-
-        self.status.setText("Creating access request…")
-
-        def job():
-            return api.post_json("/v1/api/request/create", {
-                "resource_id": int(aid),
-                "requested_by": int(STATE.user_id)
-            })
-
-        j = ApiJob(job)
-        j.signals.ok.connect(self._on_request_created)
-        j.signals.err.connect(self._on_api_error)
-        pool.start(j)
 
     def _on_request_created(self, res):
         sc, data = res
@@ -707,6 +685,111 @@ class DriveWindow(QWidget):
         self.status.setText("Error.")
 
 
+    def create_request_for_attachment(self, attachment_id: int, owner_id: int):
+        if STATE.user_id is None:
+            self._maybe_ask_user_id()
+            if STATE.user_id is None:
+                return
+
+        try:
+            current_id = int(STATE.user_id)
+            owner_id = int(owner_id)
+        except Exception:
+            current_id = 0
+            owner_id = 0
+        if owner_id and current_id and owner_id == current_id:
+            box = QMessageBox(self)
+            box.setWindowTitle("Nu se poate")
+            box.setIcon(QMessageBox.Warning)
+            box.setText("Nu poți crea request pentru propriul fișier.")
+            box.setStyleSheet("QLabel{min-width:520px; min-height:120px;}")
+            box.exec()
+            return
+
+        ans = QMessageBox.question(
+            self,
+            "Create request",
+            f"Create request for attachment #{attachment_id}?",
+            QMessageBox.Yes | QMessageBox.No
+        )
+        if ans != QMessageBox.Yes:
+            return
+
+        def job():
+            return api.post_json("/v1/api/request/create", {
+                "resource_id": int(attachment_id),
+                "requested_by": int(STATE.user_id)
+            })
+
+        j = ApiJob(job)
+
+        if not hasattr(self, "_jobs"):
+            self._jobs = []
+        self._jobs.append(j)
+
+        def cleanup():
+            try:
+                self._jobs.remove(j)
+            except ValueError:
+                pass
+
+        def _ok(res):
+            cleanup()
+            sc, data = res
+
+            if isinstance(data, dict):
+                msg = data.get("message") or data.get("error") or "OK"
+            else:
+                msg = str(data)
+
+            box = QMessageBox(self)
+            box.setWindowTitle("Request created" if sc == 200 else "Request failed")
+            box.setIcon(QMessageBox.Information if sc == 200 else QMessageBox.Warning)
+            box.setText(msg)
+            box.setStyleSheet("QLabel{min-width:520px; min-height:120px;}")
+            box.exec()
+
+        def _err(msg, tb):
+            cleanup()
+            box = QMessageBox(self)
+            box.setWindowTitle("API error")
+            box.setIcon(QMessageBox.Critical)
+            box.setText(str(msg))
+            box.setStyleSheet("QLabel{min-width:520px; min-height:120px;}")
+            box.exec()
+
+        j.signals.ok.connect(_ok)
+        j.signals.err.connect(_err)
+        pool.start(j)
+
+
+
+class RequestButtonDelegate(QStyledItemDelegate):
+    def __init__(self, parent, drive_window):
+        super().__init__(parent)
+        self.drive = drive_window
+
+    def paint(self, painter, option, index):
+        opt = QStyleOptionButton()
+        opt.rect = option.rect.adjusted(6, 4, -6, -4)
+        opt.text = "Request"
+        opt.state = QStyle.State_Enabled
+
+        if option.state & QStyle.State_MouseOver:
+            opt.state |= QStyle.State_MouseOver
+
+        QApplication.style().drawControl(QStyle.CE_PushButton, opt, painter)
+
+    def editorEvent(self, event, model, option, index):
+        if event.type() == QEvent.MouseButtonRelease and event.button() == Qt.LeftButton:
+            # index e din proxy; ia attachment_id din celula action (unde l-am setat)
+            attachment_id = index.data(self.drive.ROLE_ATTACHMENT_ID)
+            owner_id = index.data(self.drive.ROLE_OWNER_ID)
+
+            if attachment_id:
+                self.drive.create_request_for_attachment(int(attachment_id), int(owner_id or 0))
+            return True
+        return False
 
 
 class RequestsWindow(QWidget):
@@ -996,9 +1079,11 @@ class RequestsWindow(QWidget):
         self.status.setText(f"{len(visible)} request(s) shown")
 
     #TODO: request
-    def _change_request_status(self, request_id: int, new_status: str):
+    def _change_request_status(self, request_id: int, new_status: str, requested_by: int):
         self.status.setText(f"Updating request #{request_id} → {new_status}…")
-
+        #TODO: aici e id ul scos
+        print("requested_by =", requested_by)
+        print("new status: ", new_status)
         def job():
             return api.post_json("/v1/api/request/changeStatus", {
                 "id": int(request_id),
@@ -1107,6 +1192,7 @@ class RequestCard(QFrame):
         self._status = (status or "").lower()
         self._on_decision = on_decision
         self._on_download = on_download
+        self._requested_by = int(requested_by)
         st = (status or "").lower()
         if st in ("approved", "accept", "accepted"):
             badge_bg = "rgba(34,197,94,0.18)"    
@@ -1210,13 +1296,13 @@ class RequestCard(QFrame):
                 ans = QMessageBox.question(self, "Approve request", f"Approve request #{self._rid}?",
                                            QMessageBox.Yes | QMessageBox.No)
                 if ans == QMessageBox.Yes:
-                    self._on_decision(self._rid, "approved")
+                    self._on_decision(self._rid, "approved", self._requested_by)
 
             def do_reject():
                 ans = QMessageBox.question(self, "Reject request", f"Reject request #{self._rid}?",
                                            QMessageBox.Yes | QMessageBox.No)
                 if ans == QMessageBox.Yes:
-                    self._on_decision(self._rid, "rejected")
+                    self._on_decision(self._rid, "rejected", self._requested_by)
 
             btn_accept.clicked.connect(do_accept)
             btn_reject.clicked.connect(do_reject)
