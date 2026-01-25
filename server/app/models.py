@@ -9,6 +9,7 @@ class User(db.Model):
     ecc_public_key = db.Column(db.Text, nullable=False)
     role = db.Column(db.String(25), nullable=False)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    signing_public_key = db.Column(db.Text, nullable=True)
 
 class Attachment(db.Model):
     __tablename__ = 'attachments'

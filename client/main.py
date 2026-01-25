@@ -11,7 +11,7 @@ from PySide6.QtCore import QRect, QEvent
 import requests
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from PySide6.QtWidgets import QComboBox
-from umbral import SecretKey,pre,keys
+from umbral import SecretKey,pre,keys,Signer
 import base64
 from PySide6.QtWidgets import QScrollArea, QGridLayout, QDialog, QTextEdit, QDialogButtonBox
 from PySide6.QtCore import (
@@ -540,6 +540,7 @@ class DriveWindow(QWidget):
             return keys.PublicKey.from_bytes(
         base64.b64decode(pk_b64)
     )
+      
         def encrypt_aes_key_umbral(aes_key: bytes, pubkey):
             capsule, ciphertext = pre.encrypt(pubkey, aes_key)
 
@@ -564,20 +565,15 @@ class DriveWindow(QWidget):
 
                     encrypted_content, aes_key, iv = aes_encrypt_bytes(plain)
 
-                    #TO DO - SA SCOTI HARDCODAREA SI SA TE FOLOSESTI DE CE AI TU LEGAT DE NUME USER :)
-                    owner_pubkey = load_umbral_public_key("alex")
+
+                    owner_pubkey = load_umbral_public_key(STATE.username)
 
                     encrypted_key_b64, capsule_b64 = encrypt_aes_key_umbral(
                         aes_key,
                         owner_pubkey
                     )
-
-                    # 3) deocamdată trimiți cheia AES + IV în base64 (NU e “wrap” final, e doar ca să funcționeze)
                     
                     iv_b64 = base64.b64encode(iv).decode()
-
-
-                    # 4) multipart: câmpuri + fișier criptat
 
                     payload = {
                         "filename": name,
@@ -587,21 +583,8 @@ class DriveWindow(QWidget):
                         "iv": iv_b64
                     }
 
-             #       form_data = {
-              #      "filename": name,
-               #     "owner_id": str(STATE.user_id),
-                #    "encrypted_aes_key": encrypted_key_b64,
-                 #   "capsule": capsule_b64,
-                  #  "iv": iv_b64,
-                #}
-                 #   files = {
-                        # backend-ul trebuie să citească request.files["file"]
-                  #      "file": (name + ".enc", encrypted_content, "application/octet-stream")
-                   # }
 
-                    #sc, data = api.post_multipart("/v1/api/attachment/add", form_data, files)
-
-                    
+        
 
                     sc, data= api.get_json(f"/v1/api/attachment/presignedUrl", params={"object_name": name})
                 
@@ -1078,12 +1061,12 @@ class RequestsWindow(QWidget):
 
         self.status.setText(f"{len(visible)} request(s) shown")
 
-    #TODO: request
     def _change_request_status(self, request_id: int, new_status: str, requested_by: int):
         self.status.setText(f"Updating request #{request_id} → {new_status}…")
-        #TODO: aici e id ul scos
         print("requested_by =", requested_by)
         print("new status: ", new_status)
+
+
         def job():
             return api.post_json("/v1/api/request/changeStatus", {
                 "id": int(request_id),
@@ -1110,8 +1093,112 @@ class RequestsWindow(QWidget):
             self.load_requests()
 
             if new_status == "approved":
-                requested_by_id = data.get("requested_by")
-                print(requested_by_id)
+                self._fetch_requester_public_key(requested_by)
+
+        def _err(msg, tb):
+            cleanup()
+            self._on_api_error(msg, tb)
+
+        j.signals.ok.connect(_ok)
+        j.signals.err.connect(_err)
+        pool.start(j)
+
+    def _fetch_requester_public_key(self, requested_by: int):
+        def job():
+            return api.get_json(
+                "/v1/api/auth/getKey",
+                params={"user_id": int(requested_by)}
+            )
+
+        j = ApiJob(job)
+        self._jobs.append(j)
+
+        def cleanup():
+            try:
+                self._jobs.remove(j)
+            except ValueError:
+                pass
+
+        def _ok(res):
+            cleanup()
+            sc, data = res
+            if sc != 200:
+                QMessageBox.warning(self, "Key error", str(data))
+                return
+
+            print("SUNT AICI")
+
+            ecc_public_key = data.get("ecc_public_key")
+            if not ecc_public_key:
+                QMessageBox.warning(self, "Key error", "Missing receiver ecc_public_key")
+                return
+
+           
+            enc_sk_path = Path("drive_keys") / f"{STATE.username}_umbral_private.key"
+            enc_sk_b64 = enc_sk_path.read_text().strip()
+            delegating_sk = SecretKey.from_bytes(base64.b64decode(enc_sk_b64))
+
+          
+            sign_sk_path = Path("drive_keys") / f"{STATE.username}_signing_private.key"
+            sign_sk_b64 = sign_sk_path.read_text().strip()
+
+            signing_sk = SecretKey.from_bytes(base64.b64decode(sign_sk_b64))
+            signer = Signer(signing_sk)
+
+            receiving_pk = keys.PublicKey.from_bytes(base64.b64decode(ecc_public_key))
+
+            print("LOCAL VERIFY KEY:", base64.b64encode(bytes(signer.verifying_key())).decode())
+
+            kfrags = pre.generate_kfrags(
+                delegating_sk=delegating_sk,
+                receiving_pk=receiving_pk,
+                signer=signer,      
+                shares=1,
+                threshold=1
+            )
+
+
+
+            prekey_value = base64.b64encode(bytes(kfrags[0])).decode()
+
+            self._send_prekey(
+                requested_by=requested_by,
+                prekey_value=prekey_value
+            )
+
+        def _err(msg, tb):
+            cleanup()
+            self._on_api_error(msg, tb)
+
+        j.signals.ok.connect(_ok)
+        j.signals.err.connect(_err)
+
+        pool.start(j)  
+    def _send_prekey(self, requested_by: int, prekey_value: str):
+        def job():
+            return api.post_json("/v1/api/keys/add", {
+                "secret_key_user_id": STATE.user_id,
+                "public_key_user_id": requested_by,
+                "prekey_value": prekey_value
+            })
+
+        j = ApiJob(job)
+        self._jobs.append(j)
+
+        def cleanup():
+            try:
+                self._jobs.remove(j)
+            except ValueError:
+                pass
+
+        def _ok(res):
+            cleanup()
+            sc, data = res
+            if sc != 200:
+                QMessageBox.warning(self, "Prekey error", str(data))
+                return
+            print("✅ Prekey salvat cu succes")
+            self.status.setText("Access approved & key shared.")
 
         def _err(msg, tb):
             cleanup()
@@ -1123,44 +1210,181 @@ class RequestsWindow(QWidget):
 
     #TODO: download
     def _download_attachment(self, attachment_id: int, btn: QPushButton):
-        #self.status.setText(f"Fetching attachment #{attachment_id}…")
+        if hasattr(self, "status") and self.status is not None:
+            self.status.setText(f"Downloading & decrypting attachment #{attachment_id}…")
+
         def job():
-            return api.get_json(
+            # 1) metadata (id -> filename)
+            sc1, meta = api.get_json(
                 "/v1/api/attachment/getById",
                 params={"id": int(attachment_id)}
             )
-    
+            if sc1 != 200:
+                return ("err", sc1, meta)
+
+            filename = meta.get("filename")
+            if not filename:
+                return ("err", 0, {"error": "No filename returned"})
+
+            # 2) download encrypted file bytes
+            r = api.session.get(
+                api._url("/v1/api/attachment/getModel"),
+                params={"source_model": filename, "user_id": STATE.user_id},
+                timeout=60
+            )
+            if r.status_code != 200:
+                # backend poate întoarce raw text
+                try:
+                    return ("err", r.status_code, r.json())
+                except Exception:
+                    return ("err", r.status_code, {"raw": r.text})
+
+            encrypted_file_bytes = r.content
+
+            # 3) crypto material (capsule, cfrags, encrypted AES key, iv)
+            sc3, crypto = api.get_json(
+                "/v1/api/attachment/getAESKey",
+                params={"filename": filename, "user_id": STATE.user_id}
+            )
+            if sc3 != 200:
+                return ("err", sc3, crypto)
+
+            owner_id = crypto.get("owner_id")
+            if not owner_id:
+                return ("err", 0, {"error": "owner_id missing"})
+
+            # 4) fetch owner keys (Alice ECC + Signing)
+            sc4, owner_key = api.get_json(
+                "/v1/api/auth/getKey",
+                params={"user_id": int(owner_id)}
+            )
+            if sc4 != 200:
+                return ("err", sc4, owner_key)
+
+            a_pk_b64 = owner_key.get("ecc_public_key")
+            if not a_pk_b64:
+                return ("err", 0, {"error": "owner ecc_public_key missing"})
+
+            owner_signing_pk_b64 = owner_key.get("signing_public_key")
+            if not owner_signing_pk_b64:
+                return ("err", 0, {"error": "Owner signing_public_key missing from /auth/getKey"})
+
+            # 5) load receiver private key (Bob)
+            b_sk_path = Path("drive_keys") / f"{STATE.username}_umbral_private.key"
+            b_sk_b64 = b_sk_path.read_text().strip()
+            b_sk = keys.SecretKey.from_bytes(base64.b64decode(b_sk_b64))
+
+            # 6) build owner public keys objects
+            a_pk = keys.PublicKey.from_bytes(base64.b64decode(a_pk_b64))
+            owner_verifying_pk = keys.PublicKey.from_bytes(base64.b64decode(owner_signing_pk_b64))
+
+            # 7) encrypted AES key (Umbral ciphertext)
+            try:
+                encrypted_aes_key = base64.b64decode(crypto["encrypted_aes_key"])
+            except Exception:
+                return ("err", 0, {"error": "Invalid encrypted_aes_key base64"})
+
+            # 8) capsule
+            try:
+                capsule = pre.Capsule.from_bytes(base64.b64decode(crypto["capsule"]))
+            except Exception as e:
+                return ("err", 0, {"error": "Invalid capsule", "details": str(e)})
+
+            # 9) cfrags
+            cfrags_b64 = crypto.get("cfrags") or []
+            if not cfrags_b64:
+                return ("err", 0, {"error": "No cfrags received"})
+
+            try:
+                cfrags = [pre.CapsuleFrag.from_bytes(base64.b64decode(x)) for x in cfrags_b64]
+            except Exception as e:
+                return ("err", 0, {"error": "Invalid cfrag bytes", "details": str(e)})
+
+            # 9.5) verify cfrags -> VerifiedCapsuleFrag
+            receiving_pk = b_sk.public_key()
+
+            verify_fn = getattr(pre, "verify_capsule_frag", None) or getattr(pre, "verify_cfrag", None)
+            if verify_fn is None:
+                return ("err", 0, {"error": "Umbral verify function missing (verify_capsule_frag/verify_cfrag)"})
+
+            verified_cfrags = []
+            for cf in cfrags:
+                try:
+
+                    vcf = verify_fn(capsule, cf, owner_verifying_pk, a_pk, receiving_pk)
+                except TypeError:
+                    vcf = verify_fn(
+                        capsule=capsule,
+                        cfrag=cf,
+                        verifying_pk=owner_verifying_pk,
+                        delegating_pk=a_pk,
+                        receiving_pk=receiving_pk
+                    )
+                verified_cfrags.append(vcf)
+
+            # 10) decrypt re-encrypted AES key (IMPORTANT: positional args!)
+            try:
+                aes_key = pre.decrypt_reencrypted(
+                    b_sk,
+                    a_pk,
+                    capsule,
+                    verified_cfrags,
+                    encrypted_aes_key
+                )
+            except Exception as e:
+                return ("err", 0, {"error": "decrypt_reencrypted failed", "details": str(e)})
+
+            # 11) decrypt file (AES-GCM)
+            try:
+                iv = base64.b64decode(crypto["iv"])
+            except Exception:
+                return ("err", 0, {"error": "Invalid iv base64"})
+
+            try:
+                plain = AESGCM(aes_key).decrypt(iv, encrypted_file_bytes, None)
+            except Exception as e:
+                return ("err", 0, {"error": "AESGCM decrypt failed", "details": str(e)})
+
+            return ("ok", filename, plain)
+
         j = ApiJob(job)
-        self._jobs.append(j)
 
         def safe_enable():
             if btn is not None and isValid(btn):
                 btn.setEnabled(True)
 
-        def finish_cleanup():
-            try:
-                self._jobs.remove(j)
-            except ValueError:
-                pass
-
         def _ok(res):
-
-            sc, data = res
-            if sc != 200:
-                safe_enable()
-                QMessageBox.warning(self, "GetById failed", str(data))
-                finish_cleanup()
-                return
-            print("[GET BY ID RESULT]", data)
             safe_enable()
-            finish_cleanup()
+
+            if res[0] != "ok":
+                sc, data = res[1], res[2]
+                QMessageBox.warning(self, "Download failed", f"{sc}\n{data}")
+                if hasattr(self, "status") and self.status is not None:
+                    self.status.setText("Download failed.")
+                return
+
+            _, filename, plain = res
+
+            save_path, _ = QFileDialog.getSaveFileName(
+                self, "Save decrypted file", filename
+            )
+            if not save_path:
+                if hasattr(self, "status") and self.status is not None:
+                    self.status.setText("Save cancelled.")
+                return
+
+            Path(save_path).write_bytes(plain)
+
+            QMessageBox.information(
+                self, "Done", f"File decrypted & saved:\n{save_path}"
+            )
+            if hasattr(self, "status") and self.status is not None:
+                self.status.setText("File decrypted successfully.")
 
         def _err(msg, tb):
-            print("A INTRAT 8")
             safe_enable()
-            self._on_api_error(msg, tb)
-            finish_cleanup()
-        print("a intrat 8")
+            QMessageBox.critical(self, "Decrypt error", f"{msg}\n\n{tb}")
+
         j.signals.ok.connect(_ok)
         j.signals.err.connect(_err)
         pool.start(j)
@@ -1502,38 +1726,35 @@ class SignupGlass(QWidget):
         self.footer.setText("Registering…")
 
         try:
-            # private_key = ec.generate_private_key(ec.SECP256R1())
-            # public_key = private_key.public_key()
-
-            # public_pem = public_key.public_bytes(
-            #     encoding=serialization.Encoding.PEM,
-            #     format=serialization.PublicFormat.SubjectPublicKeyInfo
-            # ).decode("utf-8")
-
-            # private_pem = private_key.private_bytes(
-            #     encoding=serialization.Encoding.PEM,
-            #     format=serialization.PrivateFormat.PKCS8,
-            #     encryption_algorithm=serialization.BestAvailableEncryption(pw1.encode("utf-8"))
-            # )
-
-            # keys_dir = Path.cwd() / "drive_keys"
-            # keys_dir.mkdir(parents=True, exist_ok=True)
-            # priv_path = keys_dir / f"{username}_ecc_private.pem"
-            # pub_path = keys_dir / f"{username}_ecc_public.pem"
-
-            # priv_path.write_bytes(private_pem)
-            # pub_path.write_text(public_pem, encoding="utf-8")
+          
             sk = SecretKey.random()
             pk = sk.public_key()
 
+            signing_key = SecretKey.random()
+
+            signer = Signer(signing_key)
+            vk = signer.verifying_key()
+
+            signing_sk_b64 = base64.b64encode(signing_key.to_secret_bytes()).decode("utf-8")
+            vk_b64 = base64.b64encode(bytes(vk)).decode("utf-8")
+
+           
+        
+
             sk_b64 = base64.b64encode(sk.to_secret_bytes()).decode("utf-8")
             pk_b64 = base64.b64encode(bytes(pk)).decode("utf-8")
+            vk_b64 = base64.b64encode(bytes(vk)).decode("utf-8")
 
             keys_dir = Path.cwd() / "drive_keys"
             keys_dir.mkdir(parents=True, exist_ok=True)
 
+            (keys_dir / f"{username}_signing_private.key").write_text(
+                signing_sk_b64, encoding="utf-8"
+            )
             (keys_dir / f"{username}_umbral_private.key").write_text(sk_b64, encoding="utf-8")
             (keys_dir / f"{username}_umbral_public.key").write_text(pk_b64, encoding="utf-8")
+
+        
 
         except Exception as e:
             self.btn_create.setEnabled(True)
@@ -1546,6 +1767,7 @@ class SignupGlass(QWidget):
                 "username": username,
                 "password": pw1,
                 "ecc_public_key": pk_b64,
+                "signing_public_key": vk_b64,
                 "role": "user"
             })
 

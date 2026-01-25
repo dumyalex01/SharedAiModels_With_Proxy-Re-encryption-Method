@@ -41,8 +41,9 @@ def register():
     password = data.get("password")
     role = data.get("role", "user")
     ecc_public_key = data.get("ecc_public_key")
+    signing_public_key = data.get("signing_public_key")
 
-    if not username or not password or not ecc_public_key:
+    if not username or not password or not ecc_public_key or not signing_public_key:
         return jsonify({"error": "Missing required fields"}), 400
     
     if User.query.filter_by(username=username).first():
@@ -54,7 +55,8 @@ def register():
         username=username,
         password_hash=password_hash,
         ecc_public_key=ecc_public_key,
-        role=role
+        role=role,
+        signing_public_key = signing_public_key
     )
 
     try:
@@ -78,7 +80,10 @@ def getKey():
      if not user:
          return jsonify({"error":"User doesn't exist!"}),404
 
-     return jsonify({"ecc_public_key": user.ecc_public_key}),200
+     return jsonify({
+        "ecc_public_key": user.ecc_public_key,
+        "signing_public_key": user.signing_public_key
+    }), 200
 
 @bp.route("/getUserById",methods = ["GET"])
 def getUserById():
