@@ -15,7 +15,7 @@ def create():
     request_status = "pending"
 
     
-    attachment_metadata = Attachment.query.filter_by(resource_id = resource_id).first()
+    attachment_metadata = Attachment.query.filter_by(id = resource_id).first()
 
     if resource_id == attachment_metadata.owned_by:
         return jsonify({"error":"You cannot request your own resource!"}),400
