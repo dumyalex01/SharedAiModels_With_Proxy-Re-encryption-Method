@@ -14,6 +14,12 @@ def create():
     requested_by = data.get("requested_by")
     request_status = "pending"
 
+    
+    attachment_metadata = Attachment.query.filter_by(resource_id = resource_id).first()
+
+    if resource_id == attachment_metadata.owned_by:
+        return jsonify({"error":"You cannot request your own resource!"}),400
+
     if not resource_id or not requested_by:
         return jsonify({"error":"Resource or requester not selected"}),400
     

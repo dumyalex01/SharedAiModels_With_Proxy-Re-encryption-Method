@@ -500,18 +500,18 @@ class DriveWindow(QWidget):
             up = a.get("uploaded_at", "")
             owner_id = a.get("owned_by", "")
             owner_name = str(owner_id)
-        if owner_id:
-            sc, user_data = api.get_json("/v1/api/auth/getUserById", params={"user_id": owner_id})
-            if sc == 200 and user_data:
-                owner_name = user_data.get("username", str(owner_id))
+            if owner_id:
+                sc, user_data = api.get_json("/v1/api/auth/getUserById", params={"user_id": owner_id})
+                if sc == 200 and user_data:
+                    owner_name = user_data.get("username", str(owner_id))
 
-        self._add_row(
-            attachment_id=aid,
-            name=fname,
-            owner=owner_name,
-            modified_str=str(up),
-            owner_id=int(owner_id)
-        )
+            self._add_row(
+                attachment_id=aid,
+                name=fname,
+                owner=owner_name,
+                modified_str=str(up),
+                owner_id=int(owner_id)
+            )
 
     def post_multipart(self, path: str, data: dict, files: dict, timeout=60):
             r = self.session.post(self._url(path), data=data, files=files, timeout=timeout)
@@ -1214,7 +1214,7 @@ class RequestsWindow(QWidget):
             self.status.setText(f"Downloading & decrypting attachment #{attachment_id}…")
 
         def job():
-            # 1) metadata (id -> filename)
+          
             sc1, meta = api.get_json(
                 "/v1/api/attachment/getById",
                 params={"id": int(attachment_id)}
@@ -1226,14 +1226,13 @@ class RequestsWindow(QWidget):
             if not filename:
                 return ("err", 0, {"error": "No filename returned"})
 
-            # 2) download encrypted file bytes
             r = api.session.get(
                 api._url("/v1/api/attachment/getModel"),
                 params={"source_model": filename, "user_id": STATE.user_id},
                 timeout=60
             )
             if r.status_code != 200:
-                # backend poate întoarce raw text
+
                 try:
                     return ("err", r.status_code, r.json())
                 except Exception:
@@ -1241,7 +1240,6 @@ class RequestsWindow(QWidget):
 
             encrypted_file_bytes = r.content
 
-            # 3) crypto material (capsule, cfrags, encrypted AES key, iv)
             sc3, crypto = api.get_json(
                 "/v1/api/attachment/getAESKey",
                 params={"filename": filename, "user_id": STATE.user_id}
@@ -1253,7 +1251,6 @@ class RequestsWindow(QWidget):
             if not owner_id:
                 return ("err", 0, {"error": "owner_id missing"})
 
-            # 4) fetch owner keys (Alice ECC + Signing)
             sc4, owner_key = api.get_json(
                 "/v1/api/auth/getKey",
                 params={"user_id": int(owner_id)}
@@ -1269,16 +1266,15 @@ class RequestsWindow(QWidget):
             if not owner_signing_pk_b64:
                 return ("err", 0, {"error": "Owner signing_public_key missing from /auth/getKey"})
 
-            # 5) load receiver private key (Bob)
+
             b_sk_path = Path("drive_keys") / f"{STATE.username}_umbral_private.key"
             b_sk_b64 = b_sk_path.read_text().strip()
             b_sk = keys.SecretKey.from_bytes(base64.b64decode(b_sk_b64))
 
-            # 6) build owner public keys objects
             a_pk = keys.PublicKey.from_bytes(base64.b64decode(a_pk_b64))
             owner_verifying_pk = keys.PublicKey.from_bytes(base64.b64decode(owner_signing_pk_b64))
 
-            # 7) encrypted AES key (Umbral ciphertext)
+
             try:
                 encrypted_aes_key = base64.b64decode(crypto["encrypted_aes_key"])
             except Exception:
