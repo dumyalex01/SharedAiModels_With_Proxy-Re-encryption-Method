@@ -494,6 +494,11 @@ class DriveWindow(QWidget):
             return
 
         self._clear_rows()
+        # owner_id = 0
+        # fname = ""
+        # up = ""
+        # owner_id = ""
+        # owner_name = ""
         for a in (data or []):
             aid = a.get("id", 0)
             fname = a.get("filename", "")
@@ -1257,69 +1262,62 @@ class RequestsWindow(QWidget):
             )
             if sc4 != 200:
                 return ("err", sc4, owner_key)
-
+            print("AICI 1")
             a_pk_b64 = owner_key.get("ecc_public_key")
             if not a_pk_b64:
                 return ("err", 0, {"error": "owner ecc_public_key missing"})
-
+            print("AICI 2")
             owner_signing_pk_b64 = owner_key.get("signing_public_key")
             if not owner_signing_pk_b64:
                 return ("err", 0, {"error": "Owner signing_public_key missing from /auth/getKey"})
 
-
+            # 5) load receiver private key (Bob)
             b_sk_path = Path("drive_keys") / f"{STATE.username}_umbral_private.key"
             b_sk_b64 = b_sk_path.read_text().strip()
             b_sk = keys.SecretKey.from_bytes(base64.b64decode(b_sk_b64))
 
+            # 6) build owner public keys objects
             a_pk = keys.PublicKey.from_bytes(base64.b64decode(a_pk_b64))
             owner_verifying_pk = keys.PublicKey.from_bytes(base64.b64decode(owner_signing_pk_b64))
 
-
+            # 7) encrypted AES key (Umbral ciphertext)
             try:
                 encrypted_aes_key = base64.b64decode(crypto["encrypted_aes_key"])
             except Exception:
                 return ("err", 0, {"error": "Invalid encrypted_aes_key base64"})
-
+            print("AICI 6")  
             # 8) capsule
             try:
                 capsule = pre.Capsule.from_bytes(base64.b64decode(crypto["capsule"]))
             except Exception as e:
                 return ("err", 0, {"error": "Invalid capsule", "details": str(e)})
-
+            print("AICI 7")  
             # 9) cfrags
             cfrags_b64 = crypto.get("cfrags") or []
             if not cfrags_b64:
                 return ("err", 0, {"error": "No cfrags received"})
-
+            print("AICI 8")  
             try:
                 cfrags = [pre.CapsuleFrag.from_bytes(base64.b64decode(x)) for x in cfrags_b64]
             except Exception as e:
                 return ("err", 0, {"error": "Invalid cfrag bytes", "details": str(e)})
-
+            print("AICI 9")  
             # 9.5) verify cfrags -> VerifiedCapsuleFrag
             receiving_pk = b_sk.public_key()
-
-            verify_fn = getattr(pre, "verify_capsule_frag", None) or getattr(pre, "verify_cfrag", None)
-            if verify_fn is None:
-                return ("err", 0, {"error": "Umbral verify function missing (verify_capsule_frag/verify_cfrag)"})
-
+            print("AICI 10")  
             verified_cfrags = []
             for cf in cfrags:
-                try:
-
-                    vcf = verify_fn(capsule, cf, owner_verifying_pk, a_pk, receiving_pk)
-                except TypeError:
-                    vcf = verify_fn(
-                        capsule=capsule,
-                        cfrag=cf,
-                        verifying_pk=owner_verifying_pk,
-                        delegating_pk=a_pk,
-                        receiving_pk=receiving_pk
-                    )
+                vcf = cf.verify(
+                    capsule=capsule,
+                    verifying_pk=owner_verifying_pk,
+                    delegating_pk=a_pk,
+                    receiving_pk=receiving_pk,
+                )
                 verified_cfrags.append(vcf)
-
+            print("AICI 13") 
             # 10) decrypt re-encrypted AES key (IMPORTANT: positional args!)
             try:
+                print("AICI 14")
                 aes_key = pre.decrypt_reencrypted(
                     b_sk,
                     a_pk,
@@ -1328,33 +1326,70 @@ class RequestsWindow(QWidget):
                     encrypted_aes_key
                 )
             except Exception as e:
+                print("AICI 15") 
                 return ("err", 0, {"error": "decrypt_reencrypted failed", "details": str(e)})
+            print("AICI 16")
 
             # 11) decrypt file (AES-GCM)
             try:
                 iv = base64.b64decode(crypto["iv"])
+                print("AICI 17")
             except Exception:
+                print("AICI 171")
                 return ("err", 0, {"error": "Invalid iv base64"})
 
             try:
+                print("AICI 18")
                 plain = AESGCM(aes_key).decrypt(iv, encrypted_file_bytes, None)
             except Exception as e:
+                print("AICI 181")
                 return ("err", 0, {"error": "AESGCM decrypt failed", "details": str(e)})
-
+            print("AICI 19")    
             return ("ok", filename, plain)
 
         j = ApiJob(job)
+
+        j.setAutoDelete(False)
+
+        if not hasattr(self, "_jobs"):
+            self._jobs = []
+        self._jobs.append(j)
+
+        def cleanup():
+            try:
+                self._jobs.remove(j)
+            except ValueError:
+                pass
 
         def safe_enable():
             if btn is not None and isValid(btn):
                 btn.setEnabled(True)
 
         def _ok(res):
-            safe_enable()
+            cleanup()
 
+            print("AICI !!!!")
+
+            safe_enable() 
             if res[0] != "ok":
+                print("PROBLEMAA !!!!")
+
                 sc, data = res[1], res[2]
-                QMessageBox.warning(self, "Download failed", f"{sc}\n{data}")
+                # QMessageBox.warning(self, "Download failed", f"{sc}\n{data}")
+                box = QMessageBox(self)
+                box.setWindowTitle("Download failed")
+                box.setIcon(QMessageBox.Warning)
+                box.setText(f"{sc}\n{data}")
+
+                # mărește fereastra
+                box.setStyleSheet("""
+                    QLabel {
+                        min-width: 520px;
+                        min-height: 140px;
+                    }
+                """)
+
+                box.exec()
                 if hasattr(self, "status") and self.status is not None:
                     self.status.setText("Download failed.")
                 return
@@ -1378,6 +1413,8 @@ class RequestsWindow(QWidget):
                 self.status.setText("File decrypted successfully.")
 
         def _err(msg, tb):
+            cleanup()
+
             safe_enable()
             QMessageBox.critical(self, "Decrypt error", f"{msg}\n\n{tb}")
 
