@@ -1271,28 +1271,25 @@ class RequestsWindow(QWidget):
             if not owner_signing_pk_b64:
                 return ("err", 0, {"error": "Owner signing_public_key missing from /auth/getKey"})
 
-            # 5) load receiver private key (Bob)
             b_sk_path = Path("drive_keys") / f"{STATE.username}_umbral_private.key"
             b_sk_b64 = b_sk_path.read_text().strip()
             b_sk = keys.SecretKey.from_bytes(base64.b64decode(b_sk_b64))
 
-            # 6) build owner public keys objects
             a_pk = keys.PublicKey.from_bytes(base64.b64decode(a_pk_b64))
             owner_verifying_pk = keys.PublicKey.from_bytes(base64.b64decode(owner_signing_pk_b64))
 
-            # 7) encrypted AES key (Umbral ciphertext)
             try:
                 encrypted_aes_key = base64.b64decode(crypto["encrypted_aes_key"])
             except Exception:
                 return ("err", 0, {"error": "Invalid encrypted_aes_key base64"})
             print("AICI 6")  
-            # 8) capsule
+
             try:
                 capsule = pre.Capsule.from_bytes(base64.b64decode(crypto["capsule"]))
             except Exception as e:
                 return ("err", 0, {"error": "Invalid capsule", "details": str(e)})
             print("AICI 7")  
-            # 9) cfrags
+
             cfrags_b64 = crypto.get("cfrags") or []
             if not cfrags_b64:
                 return ("err", 0, {"error": "No cfrags received"})
@@ -1302,7 +1299,7 @@ class RequestsWindow(QWidget):
             except Exception as e:
                 return ("err", 0, {"error": "Invalid cfrag bytes", "details": str(e)})
             print("AICI 9")  
-            # 9.5) verify cfrags -> VerifiedCapsuleFrag
+
             receiving_pk = b_sk.public_key()
             print("AICI 10")  
             verified_cfrags = []
@@ -1315,7 +1312,7 @@ class RequestsWindow(QWidget):
                 )
                 verified_cfrags.append(vcf)
             print("AICI 13") 
-            # 10) decrypt re-encrypted AES key (IMPORTANT: positional args!)
+          
             try:
                 print("AICI 14")
                 aes_key = pre.decrypt_reencrypted(
@@ -1330,7 +1327,6 @@ class RequestsWindow(QWidget):
                 return ("err", 0, {"error": "decrypt_reencrypted failed", "details": str(e)})
             print("AICI 16")
 
-            # 11) decrypt file (AES-GCM)
             try:
                 iv = base64.b64decode(crypto["iv"])
                 print("AICI 17")
